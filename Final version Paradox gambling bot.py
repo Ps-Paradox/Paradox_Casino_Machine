@@ -2785,13 +2785,20 @@ async def Time_Walker(ctx):
 
 
     # -------------------- Custom Announcements --------------------
+bot = commands.Bot(command_prefix="!")
+
+# Variables to hold announcement details
 ANNOUNCEMENT_CHANNEL = None
 ANNOUNCEMENT_MESSAGE = ""
+
+# Predefined 'general' channel name (change if necessary)
+GENERAL_CHANNEL_NAME = "general"
 
 @bot.command(name="setdailyannouncement")
 async def set_announcement(ctx, channel: discord.TextChannel, *, message: str):
     """Set a daily announcement in a specific channel."""
     global ANNOUNCEMENT_CHANNEL, ANNOUNCEMENT_MESSAGE
+    # Assign the channel ID and the message
     ANNOUNCEMENT_CHANNEL = channel.id
     ANNOUNCEMENT_MESSAGE = message
     await ctx.send(f"📢 Daily announcement set in {channel.mention}: {message}")
@@ -2803,6 +2810,35 @@ async def unset_announcement(ctx):
     ANNOUNCEMENT_CHANNEL = None
     ANNOUNCEMENT_MESSAGE = ""
     await ctx.send("❌ Daily announcement removed.")
+
+# Task to send daily announcements
+
+
+@tasks.loop(hours=12)
+async def send_daily_announcement():
+    if ANNOUNCEMENT_CHANNEL and ANNOUNCEMENT_MESSAGE:
+        channel = bot.get_channel(ANNOUNCEMENT_CHANNEL)
+        if channel:
+            await channel.send(ANNOUNCEMENT_MESSAGE)
+    else:
+        # Send the default message to the general channel if no custom announcement is set
+        default_message = "Morning @everyone, Daily Casino updates from Time_Walker.inc. Claim your daily awards using !daily command to get started."
+        # Fetch the general channel using the predefined name
+        general_channel = discord.utils.get(bot.get_all_channels(), name=GENERAL_CHANNEL_NAME)
+        if general_channel:
+            await general_channel.send(default_message)
+
+@send_daily_announcement.before_loop
+async def before_send_daily_announcement():
+    await bot.wait_until_ready()
+
+# Start the task once the bot is ready
+@bot.event
+async def on_ready():
+    # Ensure the task starts if the bot is ready and has no custom announcement set
+    if not ANNOUNCEMENT_CHANNEL or not ANNOUNCEMENT_MESSAGE:
+        send_daily_announcement.start()
+
 
 # --- Error Handling ---
 @bot.event
