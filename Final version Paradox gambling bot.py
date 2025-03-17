@@ -63,12 +63,12 @@ bot.remove_command('help')
 
 # --- Game Constants ---
 MAX_LINES = 3
-MAX_BET = 1000
-MIN_BET = 10
-DAILY_REWARD = 500
+MAX_BET = 100000
+MIN_BET = 100
+DAILY_REWARD = 1000
 JACKPOT_SYMBOL = '7️⃣'
 JACKPOT_MULTIPLIER = 5
-STARTING_BALANCE = 7000
+STARTING_BALANCE = 5000
 LOTTERY_TICKET_PRICE = 50
 TOURNAMENT_ENTRY_FEE = 500
 
@@ -1405,10 +1405,11 @@ async def poker(ctx, amount: int):
     )
     embed.add_field(name="Result", value=f"{'Win' if win else 'Lose'}! ${payout}", inline=False)
     embed.add_field(name="Balance", value=f"${new_balance}", inline=True)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed)  # This replaces the stray "embed" line
     update_user_data(user_id, {'balance': new_balance})
     if win:
         check_achievements(user_id, amount, payout, False, new_balance, user_data['streaks'], "poker")
+
 
 @bot.command()
 async def craps(ctx, bet_type: str, amount: int):
