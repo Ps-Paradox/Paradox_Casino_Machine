@@ -1013,6 +1013,30 @@ async def daily(ctx):
         await ctx.send(f"⏳ Wait {time_left.seconds // 3600}h {(time_left.seconds % 3600) // 60}m")
 
 @bot.command()
+async def setdailyannouncement(ctx, channel: discord.TextChannel, *, message: str):
+    """Set a daily announcement message for a specific channel."""
+    guild_id = ctx.guild.id
+    channel_id = channel.id
+
+    # Save the announcement settings to the database
+    conn = sqlite3.connect('casino.db')
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO announcement_settings (guild_id, channel_id, message) VALUES (?, ?, ?)',
+              (guild_id, channel_id, message))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(f"✅ Daily announcement set for {channel.mention}: {message}")
+
+@bot.command()
+async def setannouncement(ctx, channel: discord.TextChannel, *, message: str):
+    """Send an immediate announcement to a specific channel."""
+    await channel.send(message)
+    await ctx.send(f"✅ Announcement sent to {channel.mention}")
+
+
+
+@bot.command()
 async def profile(ctx, member: discord.Member = None):
     """Display user profile."""
     user = member or ctx.author
@@ -1588,29 +1612,6 @@ async def run_tournament(channel_id):
     await channel.send(f"🏆 <@{winner_id}> wins ${tournament['prize_pool']} with {scores[winner_id]} points!")
     update_tournament_data(channel_id, {'active': 0})
 
-# --- Announcement Commands ---
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def setdailyannouncement(ctx, channel: discord.TextChannel, *, message: str):
-    """Set daily announcement channel."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO announcement_settings (guild_id, channel_id, message) VALUES (?, ?, ?)',
-              (ctx.guild.id, channel.id, message))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"📢 Daily announcement set for {channel.mention}: '{message}'")
-
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def unsetdailyannouncement(ctx):
-    """Unset daily announcement."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM announcement_settings WHERE guild_id = ?', (ctx.guild.id,))
-    conn.commit()
-    conn.close()
-    await ctx.send("📢 Daily announcement unset.")
 
 # --- Help Command ---
 @bot.command(name="paradox")
