@@ -1,4 +1,3 @@
-# Import required libraries for bot functionality, database, and threading
 import discord
 from discord.ext import commands
 import random
@@ -7,82 +6,44 @@ from datetime import datetime, timedelta
 import os
 import sqlite3
 import json
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import threading
 import logging
 import time
 import math
+import requests  # For making API requests
+import html      # For decoding HTML entities
+import aiohttp
 
-# --- Flask Setup for Uptime Monitoring ---
-app = Flask(__name__)
+bot_start_time = datetime.utcnow()
 
-@app.route('/')
-def home():
-    """Root endpoint to confirm bot operation."""
-    return "Paradox Casino Bot is running smoothly!"
+# --- Constants ---
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint for bot status."""
-    return json.dumps({"status": "healthy", "uptime": time.time() - start_time}), 200
-
-@app.route('/<path:path>')
-def catch_all(path):
-    """Catch-all endpoint for invalid paths."""
-    print(f"Received request for path: {path}")
-    return f"Path {path} not found, but server is running!", 404
-
-def run_flask():
-    """Run Flask server in a thread for uptime monitoring."""
-    port = int(os.environ.get('PORT', 8080))
-    try:
-        print(f"Starting Flask server on port {port}...")
-        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-    except Exception as e:
-        print(f"Flask server failed: {e}")
-
-start_time = time.time()
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
-
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.FileHandler('casino_bot.log'), logging.StreamHandler()]
-)
-logger = logging.getLogger('ParadoxCasinoBot')
-
-# --- Bot Configuration ---
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.presences = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-bot.remove_command('help')
-
-# --- Game Constants ---
+# General Constants
 MAX_LINES = 3
-MAX_BET = 100000
-MIN_BET = 100
-DAILY_REWARD = 1000
+MAX_BET = 1000
+MIN_BET = 10
+DAILY_REWARD = 500
 JACKPOT_SYMBOL = '7️⃣'
 JACKPOT_MULTIPLIER = 5
-STARTING_BALANCE = 5000
+STARTING_BALANCE = 7000
 LOTTERY_TICKET_PRICE = 50
 TOURNAMENT_ENTRY_FEE = 500
+BANK_INTEREST_RATE = 0.02  # 2% daily interest
 
+# Slot Machine Constants
 SLOTS = ['🍒', '🍋', '🍇', '🔔', '💎', '7️⃣']
 WIN_MESSAGES = [
-    "You're on fire! 🔥", "Lucky spin! 🍀", "Cha-ching! 💰", "Winner winner! 🍗",
-    "Defying odds! ✨", "Jackpot vibes! ⚡", "Fortune smiles! 🌟"
+    "You're on a hot streak! 🔥", "Luck is on your side! 🍀", "Money in the bank! 💰",
+    "Winner takes all! 🍗", "Defying the odds! ✨", "Jackpot dreams come true! ⚡",
+    "Fortune favors the bold! 🌟"
 ]
 LOSS_MESSAGES = [
-    "Better luck next time! 🎲", "So close! 📏", "House wins... for now! 🤔",
-    "Paradox strikes! 😤", "Keep going! ✨", "Break the odds! 🔄"
+    "Next time’s the charm! 🎲", "So close yet so far! 📏", "The house edges out! 🤔",
+    "Paradox strikes again! 😤", "Keep spinning! ✨", "Break the streak! 🔄"
 ]
 
-# --- Roulette Constants ---
+# Roulette Constants
 RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 BLACK_NUMBERS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 GREEN_NUMBERS = [0]
@@ -95,44 +56,61 @@ ROULETTE_BETS = {
     "column": {"payout": 2, "validator": lambda x: x.isdigit() and 1 <= int(x) <= 3}
 }
 
-# --- Poker Constants ---
-POKER_CARDS = [f"{rank}{suit}" for suit in "♠♥♦♣" for rank in "23456789TJQKA"]
-POKER_HANDS = {
-    "Royal Flush": 250, "Straight Flush": 50, "Four of a Kind": 25, "Full House": 9,
-    "Flush": 6, "Straight": 4, "Three of a Kind": 3, "Two Pair": 2, "One Pair": 1,
-    "High Card": 0
+# Poker Constants
+CARD_SUITS = ['♠', '♣', '♥', '♦']
+CARD_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+POKER_PAYOUTS = {
+    "royal_flush": 250,
+    "straight_flush": 50,
+    "four_of_a_kind": 25,
+    "full_house": 9,
+    "flush": 6,
+    "straight": 4,
+    "three_of_a_kind": 3,
+    "two_pair": 2,
+    "pair": 1,
+    "high_card": 0
 }
 
-# --- Blackjack Constants ---
-CARD_VALUES = {
-    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, 'T': 10,
-    'J': 10, 'Q': 10, 'K': 10, 'A': 11
-}
-BLACKJACK_CARDS = [f"{rank}{suit}" for suit in "♠♥♦♣" for rank in "23456789TJQKA"]
+# Blackjack Constants
+BLACKJACK_PAYOUT = 1.5
+DECK = [f"{rank}{suit}" for suit in CARD_SUITS for rank in CARD_RANKS] * 4
 
-# --- Craps Constants ---
-CRAPS_PASS_LINE = {"win": [7, 11], "lose": [2, 3, 12], "point": [4, 5, 6, 8, 9, 10]}
-CRAPS_DONT_PASS = {"win": [2, 3], "lose": [7, 11], "push": [12], "point": [4, 5, 6, 8, 9, 10]}
+# Wheel of Fortune Constants
+WHEEL_PRIZES = [0, 50, 100, 200, 500, 1000, "Jackpot"]
 
-# --- Baccarat Constants ---
-BACCARAT_BETS = {"player": 1, "banker": 0.95, "tie": 8}
+# Scratch Card Constants
+SCRATCH_PRIZES = [0, 10, 25, 50, 100, 500]
+SCRATCH_PRICE = 20
 
-# --- Economy Constants ---
+# Bingo Constants
+BINGO_NUMBERS = list(range(1, 76))
+BINGO_CARD_SIZE = 5
+
+# Economy Constants
 SHOP_ITEMS = {
-    "profile_bg1": {"name": "Cosmic Sky", "description": "Starry backdrop", "price": 1000},
-    "profile_bg2": {"name": "Golden Vault", "description": "Gold shine", "price": 1000},
-    "title_gambler": {"name": "Gambler", "description": "Risk-taker", "price": 500},
-    "title_highroller": {"name": "High Roller", "description": "Big spender", "price": 750},
-    "daily_boost": {"name": "Daily Boost", "description": "2x daily reward (24h)", "price": 200},
-    "xp_boost": {"name": "XP Boost", "description": "2x XP (24h)", "price": 300},
-    "loan_pass": {"name": "Loan Pass", "description": "Take a loan", "price": 100},
-    "tournament_ticket": {"name": "Tournament Ticket", "description": "Tournament entry", "price": 500},
-    "crafting_kit": {"name": "Crafting Kit", "description": "Unlock crafting", "price": 800}
+    "profile_bg1": {"name": "Cosmic Background", "description": "A starry night sky", "price": 1000},
+    "profile_bg2": {"name": "Golden Vault", "description": "Shimmering gold backdrop", "price": 1000},
+    "title_gambler": {"name": "Gambler", "description": "For risk-takers", "price": 500},
+    "title_highroller": {"name": "High Roller", "description": "For big spenders", "price": 750},
+    "daily_boost": {"name": "Daily Boost", "description": "Doubles daily reward for 24h", "price": 200},
+    "xp_boost": {"name": "XP Boost", "description": "Doubles XP gain for 24h", "price": 300},
+    "loan_pass": {"name": "Loan Pass", "description": "Allows taking a loan", "price": 100},
+    "tournament_ticket": {"name": "Tournament Ticket", "description": "Entry to a tournament", "price": 500},
+    "crafting_kit": {"name": "Crafting Kit", "description": "Unlocks crafting recipes", "price": 800}
 }
 
 CRAFTING_RECIPES = {
-    "lucky_charm": {"ingredients": {"gold_coin": 5, "four_leaf_clover": 1}, "description": "5% win boost (1h)", "duration": "1h"},
-    "mega_jackpot": {"ingredients": {"gold_bar": 3, "diamond": 2}, "description": "3x jackpot once", "uses": 1}
+    "lucky_charm": {
+        "ingredients": {"gold_coin": 5, "four_leaf_clover": 1},
+        "description": "Increases win chance by 5% for 1 hour",
+        "duration": "1h"
+    },
+    "mega_jackpot": {
+        "ingredients": {"gold_bar": 3, "diamond": 2},
+        "description": "Triples jackpot winnings once",
+        "uses": 1
+    }
 }
 
 ITEM_DROP_TABLE = {
@@ -142,276 +120,309 @@ ITEM_DROP_TABLE = {
     "diamond": {"chance": 0.02, "source": "blackjack"}
 }
 
-# --- Achievements Dictionary ---
+# Achievements
 ACHIEVEMENTS = {
-    "first_win": {"name": "Paradox Novice", "description": "Win first slot game", "emoji": "🏆"},
+    "first_win": {"name": "Paradox Novice", "description": "Win your first slot game", "emoji": "🏆"},
     "big_winner": {"name": "Paradox Master", "description": "Win over 1000 coins", "emoji": "💎"},
-    "jackpot": {"name": "Paradox Breaker", "description": "Hit the jackpot", "emoji": "🎯"},
-    "broke": {"name": "Rock Bottom", "description": "Lose all money", "emoji": "📉"},
-    "comeback": {"name": "Phoenix Rising", "description": "Win with <100 coins", "emoji": "🔄"},
-    "high_roller": {"name": "Paradox Whale", "description": "Bet max amount", "emoji": "💵"},
-    "daily_streak": {"name": "Time Traveler", "description": "Claim 7 days", "emoji": "⏰"},
-    "legendary": {"name": "Legendary Gambler", "description": "Win 5 in a row", "emoji": "👑"},
-    "rps_master": {"name": "RPS Master", "description": "Win 5 RPS in a row", "emoji": "🪨"},
-    "blackjack_pro": {"name": "Blackjack Pro", "description": "Win 3 Blackjack in a row", "emoji": "♠"},
-    "roulette_master": {"name": "Roulette Master", "description": "Win number bet", "emoji": "🎡"},
-    "poker_pro": {"name": "Poker Pro", "description": "Win Poker game", "emoji": "🃏"},
-    "craps_winner": {"name": "Craps Winner", "description": "Win Craps game", "emoji": "🎲"},
-    "baccarat_champ": {"name": "Baccarat Champ", "description": "Win Baccarat game", "emoji": "🎴"},
-    "shopaholic": {"name": "Shopaholic", "description": "Buy 10 items", "emoji": "🛍️"},
-    "vip_member": {"name": "VIP Member", "description": "Reach Level 5", "emoji": "👑"},
-    "debt_free": {"name": "Debt Free", "description": "Pay off loan", "emoji": "💸"},
-    "tournament_champ": {"name": "Tournament Champ", "description": "Win tournament", "emoji": "🏅"},
-    "craftsman": {"name": "Craftsman", "description": "Craft first item", "emoji": "🔨"},
-    "trader": {"name": "Trader", "description": "Complete a trade", "emoji": "🤝"},
-    "trivia_genius": {"name": "Trivia Genius", "description": "Answer 10 trivia", "emoji": "❓"},
-    "hangman_hero": {"name": "Hangman Hero", "description": "Win 5 Hangman", "emoji": "🔤"},
-    "number_wizard": {"name": "Number Wizard", "description": "Guess number <10 tries", "emoji": "🔢"},
-    "coinflip_streak": {"name": "Coinflip Champ", "description": "Win 3 coinflips", "emoji": "🪙"},
-    "dice_master": {"name": "Dice Master", "description": "Win 5 dice rolls", "emoji": "🎲"},
-    "lottery_winner": {"name": "Lottery Lord", "description": "Win lottery", "emoji": "🎟️"}
+    "daily_streak": {"name": "Consistent Player", "description": "Claim daily reward 7 days in a row", "emoji": "📅"},
+    "tournament_champ": {"name": "Tournament King", "description": "Win a tournament", "emoji": "👑"}
 }
 
-# --- Mission Constants ---
+# Missions
 MISSIONS = {
     "daily": [
-        {"id": "play_slots", "name": "Slot Enthusiast", "description": "Play 5 slots", "requirements": {"slot_plays": 5}, "rewards": {"coins": 100}},
-        {"id": "win_games", "name": "Winner", "description": "Win 3 games", "requirements": {"wins": 3}, "rewards": {"coins": 150}}
+        {"id": "play_slots", "name": "Slot Enthusiast", "description": "Play 5 slot games", "requirements": {"slot_plays": 5}, "rewards": {"coins": 100, "xp": 50}},
+        {"id": "win_roulette", "name": "Roulette Pro", "description": "Win a roulette bet", "requirements": {"roulette_wins": 1}, "rewards": {"coins": 150, "xp": 75}}
     ],
     "weekly": [
-        {"id": "slot_master", "name": "Slot Master", "description": "Win 10 slots", "requirements": {"slot_wins": 10}, "rewards": {"coins": 500}}
+        {"id": "big_spender", "name": "Big Spender", "description": "Spend 5000 coins", "requirements": {"spent": 5000}, "rewards": {"coins": 1000, "xp": 500}}
     ],
     "one-time": [
-        {"id": "level_5", "name": "Level Up", "description": "Reach level 5", "requirements": {"level": 5}, "rewards": {"coins": 1000}},
-        {"id": "jackpot", "name": "Jackpot Hunter", "description": "Win jackpot", "requirements": {"jackpot_wins": 1}, "rewards": {"coins": 2000}}
+        {"id": "first_level", "name": "Level Up", "description": "Reach level 2", "requirements": {"level": 2}, "rewards": {"coins": 200, "xp": 100}}
     ]
 }
 
-# --- SQLite Database Initialization ---
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.FileHandler('casino_bot.log'), logging.StreamHandler()]
+)
+logger = logging.getLogger('ParadoxCasinoBot')
+
+# --- Bot Setup ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.presences = True
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+
+# --- Flask Setup ---
+app = Flask(__name__)
+start_time = time.time()
+
+@app.route('/')
+def home():
+    return "Paradox Casino Bot is operational!"
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "uptime": time.time() - start_time}), 200
+
+@app.route('/<path:path>')
+def catch_all(path):
+    return f"Error: Path '{path}' not found!", 404
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    logger.info(f"Starting Flask server on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# --- Database Helpers ---
+
 def init_db():
-    """Initialize SQLite database with tables for users, lottery, tournaments, items, trades, and announcements."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY,
-                    balance INTEGER DEFAULT 7000,
-                    winnings INTEGER DEFAULT 0,
-                    xp INTEGER DEFAULT 0,
-                    level INTEGER DEFAULT 1,
-                    achievements TEXT DEFAULT '[]',
-                    inventory TEXT DEFAULT '{}',
-                    loans TEXT DEFAULT '{}',
-                    lottery_tickets INTEGER DEFAULT 0,
-                    profile_custom TEXT DEFAULT '{}',
-                    daily_claim TEXT,
-                    streaks TEXT DEFAULT '{}',
-                    trivia_correct INTEGER DEFAULT 0,
-                    hangman_wins INTEGER DEFAULT 0,
-                    number_guesses INTEGER DEFAULT 0,
-                    coinflip_wins INTEGER DEFAULT 0,
-                    dice_wins INTEGER DEFAULT 0,
-                    rps_wins INTEGER DEFAULT 0,
-                    blackjack_wins INTEGER DEFAULT 0,
-                    craps_wins INTEGER DEFAULT 0,
-                    crafting_items TEXT DEFAULT '{}',
-                    active_effects TEXT DEFAULT '{}',
-                    missions TEXT DEFAULT '{}'
-                )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_id ON users (id)')
-    c.execute('''CREATE TABLE IF NOT EXISTS lottery (
-                    jackpot INTEGER DEFAULT 1000
-                )''')
-    c.execute('INSERT OR IGNORE INTO lottery (rowid, jackpot) VALUES (1, 1000)')
-    c.execute('''CREATE TABLE IF NOT EXISTS tournaments (
-                    channel_id INTEGER PRIMARY KEY,
-                    game_type TEXT,
-                    players TEXT DEFAULT '{}',
-                    scores TEXT DEFAULT '{}',
-                    rounds INTEGER DEFAULT 3,
-                    current_round INTEGER DEFAULT 0,
-                    active INTEGER DEFAULT 0,
-                    prize_pool INTEGER DEFAULT 0
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS items (
-                    item_id TEXT PRIMARY KEY,
-                    name TEXT,
-                    description TEXT,
-                    price INTEGER
-                )''')
-    for item_id, item in SHOP_ITEMS.items():
-        c.execute('INSERT OR IGNORE INTO items (item_id, name, description, price) VALUES (?, ?, ?, ?)',
-                  (item_id, item['name'], item['description'], item['price']))
-    c.execute('''CREATE TABLE IF NOT EXISTS trade_offers (
-                    offer_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sender_id INTEGER,
-                    receiver_id INTEGER,
-                    offered_items TEXT,
-                    requested_items TEXT,
-                    status TEXT DEFAULT 'pending'
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS announcement_settings (
-                    guild_id INTEGER PRIMARY KEY,
-                    channel_id INTEGER,
-                    message TEXT
-                )''')
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized successfully.")
+    """Initialize the SQLite database with all necessary tables."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
 
-init_db()
+        # Users table
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY,
+                        balance INTEGER DEFAULT 7000,
+                        bank_balance INTEGER DEFAULT 0,
+                        winnings INTEGER DEFAULT 0,
+                        xp INTEGER DEFAULT 0,
+                        level INTEGER DEFAULT 1,
+                        achievements TEXT DEFAULT '[]',
+                        inventory TEXT DEFAULT '{}',
+                        loans TEXT DEFAULT '{}',
+                        lottery_tickets INTEGER DEFAULT 0,
+                        daily_claim TEXT,
+                        streaks TEXT DEFAULT '{"daily": 0}',
+                        rps_wins INTEGER DEFAULT 0,
+                        blackjack_wins INTEGER DEFAULT 0,
+                        craps_wins INTEGER DEFAULT 0,
+                        crafting_items TEXT DEFAULT '{}',
+                        active_effects TEXT DEFAULT '{}',
+                        missions TEXT DEFAULT '{}'
+                    )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_users_id ON users (id)')
 
-# --- Database Helper Functions ---
+        # Lottery table
+        c.execute('''CREATE TABLE IF NOT EXISTS lottery (
+                        jackpot INTEGER DEFAULT 1000
+                    )''')
+        c.execute('INSERT OR IGNORE INTO lottery (rowid, jackpot) VALUES (1, 1000)')
+
+        # Tournaments table
+        c.execute('''CREATE TABLE IF NOT EXISTS tournaments (
+                        channel_id INTEGER PRIMARY KEY,
+                        game_type TEXT,
+                        players TEXT DEFAULT '{}',
+                        scores TEXT DEFAULT '{}',
+                        rounds INTEGER DEFAULT 3,
+                        current_round INTEGER DEFAULT 0,
+                        active INTEGER DEFAULT 0,
+                        prize_pool INTEGER DEFAULT 0
+                    )''')
+
+        # Items table
+        c.execute('''CREATE TABLE IF NOT EXISTS items (
+                        item_id TEXT PRIMARY KEY,
+                        name TEXT,
+                        description TEXT,
+                        price INTEGER
+                    )''')
+        for item_id, item in SHOP_ITEMS.items():
+            c.execute('INSERT OR IGNORE INTO items (item_id, name, description, price) VALUES (?, ?, ?, ?)',
+                      (item_id, item['name'], item['description'], item['price']))
+
+        # Trade offers table
+        c.execute('''CREATE TABLE IF NOT EXISTS trade_offers (
+                        offer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sender_id INTEGER,
+                        receiver_id INTEGER,
+                        offered_items TEXT,
+                        requested_items TEXT,
+                        status TEXT DEFAULT 'pending'
+                    )''')
+
+        # Announcement settings table (already present, no change needed)
+        c.execute('''CREATE TABLE IF NOT EXISTS announcement_settings (
+                        guild_id INTEGER PRIMARY KEY,
+                        channel_id INTEGER,
+                        message TEXT
+                    )''')
+
+        conn.commit()
+        logger.info("Database initialized with all necessary tables.")
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization error: {e}")
+    finally:
+        conn.close()
+
 def get_user_data(user_id):
-    """Retrieve user data, initializing if absent."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO users (id, balance) VALUES (?, ?)', (user_id, STARTING_BALANCE))
-    c.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-    data = c.fetchone()
-    conn.commit()
-    conn.close()
-    keys = ['id', 'balance', 'winnings', 'xp', 'level', 'achievements', 'inventory', 'loans',
-            'lottery_tickets', 'profile_custom', 'daily_claim', 'streaks', 'trivia_correct',
-            'hangman_wins', 'number_guesses', 'coinflip_wins', 'dice_wins', 'rps_wins',
-            'blackjack_wins', 'craps_wins', 'crafting_items', 'active_effects', 'missions']
-    return dict(zip(keys, data))
+    """Retrieve user data from the database, initializing if not present."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('INSERT OR IGNORE INTO users (id, balance) VALUES (?, ?)', (user_id, STARTING_BALANCE))
+        c.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        data = c.fetchone()
+        conn.commit()
+        keys = ['id', 'balance', 'bank_balance', 'winnings', 'xp', 'level', 'achievements', 'inventory', 'loans',
+                'lottery_tickets', 'daily_claim', 'streaks', 'rps_wins', 'blackjack_wins', 'craps_wins',
+                'crafting_items', 'active_effects', 'missions']
+        return dict(zip(keys, data))
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_user_data: {e}")
+        return None
+    finally:
+        conn.close()
 
 def update_user_data(user_id, updates):
-    """Update user data with provided key-value pairs."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    query = 'UPDATE users SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE id = ?'
-    values = list(updates.values()) + [user_id]
-    c.execute(query, values)
-    conn.commit()
-    conn.close()
-    logger.debug(f"Updated user {user_id}: {updates}")
+    """Update user data in the database."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        query = 'UPDATE users SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE id = ?'
+        values = list(updates.values()) + [user_id]
+        c.execute(query, values)
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in update_user_data: {e}")
+    finally:
+        conn.close()
 
 def get_lottery_jackpot():
-    """Retrieve current lottery jackpot."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('SELECT jackpot FROM lottery WHERE rowid = 1')
-    jackpot = c.fetchone()[0]
-    conn.close()
-    return jackpot
+    """Get the current lottery jackpot."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('SELECT jackpot FROM lottery WHERE rowid = 1')
+        return c.fetchone()[0]
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_lottery_jackpot: {e}")
+        return 1000
+    finally:
+        conn.close()
 
 def update_lottery_jackpot(amount):
-    """Adjust lottery jackpot by amount."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('UPDATE lottery SET jackpot = jackpot + ? WHERE rowid = 1', (amount,))
-    conn.commit()
-    conn.close()
-    logger.debug(f"Jackpot updated by {amount}")
+    """Update the lottery jackpot by adding the specified amount."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('UPDATE lottery SET jackpot = jackpot + ? WHERE rowid = 1', (amount,))
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in update_lottery_jackpot: {e}")
+    finally:
+        conn.close()
 
 def get_tournament_data(channel_id):
     """Retrieve tournament data for a channel."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM tournaments WHERE channel_id = ?', (channel_id,))
-    data = c.fetchone()
-    conn.close()
-    if data:
-        keys = ['channel_id', 'game_type', 'players', 'scores', 'rounds', 'current_round', 'active', 'prize_pool']
-        return dict(zip(keys, data))
-    return None
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('SELECT * FROM tournaments WHERE channel_id = ?', (channel_id,))
+        data = c.fetchone()
+        if data:
+            keys = ['channel_id', 'game_type', 'players', 'scores', 'rounds', 'current_round', 'active', 'prize_pool']
+            return dict(zip(keys, data))
+        return None
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_tournament_data: {e}")
+        return None
+    finally:
+        conn.close()
 
 def update_tournament_data(channel_id, updates):
     """Update or insert tournament data."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO tournaments (channel_id) VALUES (?)', (channel_id,))
-    query = 'UPDATE tournaments SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE channel_id = ?'
-    values = list(updates.values()) + [channel_id]
-    c.execute(query, values)
-    conn.commit()
-    conn.close()
-    logger.debug(f"Tournament updated for {channel_id}: {updates}")
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('INSERT OR IGNORE INTO tournaments (channel_id) VALUES (?)', (channel_id,))
+        query = 'UPDATE tournaments SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE channel_id = ?'
+        values = list(updates.values()) + [channel_id]
+        c.execute(query, values)
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in update_tournament_data: {e}")
+    finally:
+        conn.close()
 
-def get_item_data(item_id):
-    """Retrieve item data from shop."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM items WHERE item_id = ?', (item_id,))
-    data = c.fetchone()
-    conn.close()
-    if data:
-        keys = ['item_id', 'name', 'description', 'price']
-        return dict(zip(keys, data))
-    return None
+# New announcement helpers
+def set_announcement_settings(guild_id, channel_id, message=None):
+    """Set the announcement channel and optional message for a guild."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('INSERT OR REPLACE INTO announcement_settings (guild_id, channel_id, message) VALUES (?, ?, ?)',
+                  (guild_id, channel_id, message))
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in set_announcement_settings: {e}")
+    finally:
+        conn.close()
 
-def create_trade_offer(sender_id, receiver_id, offered_items, requested_items):
-    """Create a trade offer."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('''INSERT INTO trade_offers (sender_id, receiver_id, offered_items, requested_items)
-                 VALUES (?, ?, ?, ?)''', (sender_id, receiver_id, json.dumps(offered_items), json.dumps(requested_items)))
-    offer_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return offer_id
+def get_announcement_settings(guild_id):
+    """Get the announcement channel and message for a guild."""
+    try:
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('SELECT channel_id, message FROM announcement_settings WHERE guild_id = ?', (guild_id,))
+        result = c.fetchone()
+        return {'channel_id': result[0], 'message': result[1]} if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_announcement_settings: {e}")
+        return None
+    finally:
+        conn.close()
 
-def get_trade_offer(offer_id):
-    """Retrieve trade offer details."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM trade_offers WHERE offer_id = ?', (offer_id,))
-    data = c.fetchone()
-    conn.close()
-    if data:
-        keys = ['offer_id', 'sender_id', 'receiver_id', 'offered_items', 'requested_items', 'status']
-        return dict(zip(keys, data))
-    return None
 
-def update_trade_offer(offer_id, updates):
-    """Update trade offer status or details."""
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    query = 'UPDATE trade_offers SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE offer_id = ?'
-    values = list(updates.values()) + [offer_id]
-    c.execute(query, values)
-    conn.commit()
-    conn.close()
+# --- Utility Commands ---
 
-# --- Mission Helper Functions ---
-def get_user_missions(user_id):
-    """Retrieve user's mission progress."""
-    user_data = get_user_data(user_id)
-    return json.loads(user_data['missions'])
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setannouncement(ctx, channel: discord.TextChannel = None, *, message: str = None):
+    """Set the daily shop reset announcement channel and optional message. Usage: !setannouncement [#channel] [message]"""
+    channel = channel or ctx.channel  # Default to current channel
+    set_announcement_settings(ctx.guild.id, channel.id, message)
+    embed = discord.Embed(
+        title="📢 Shop Reset Announcement Settings Updated",
+        description=f"Daily shop reset announcements will be sent to {channel.mention}.\n" +
+                    (f"Custom message set: '{message}'" if message else "Using default: 'Daily shop is reset thx for gambling with us Regards Time_Walker.inc'"),
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
 
-def update_user_missions(user_id, missions):
-    """Update user's mission progress."""
-    update_user_data(user_id, {'missions': json.dumps(missions)})
+@bot.command()
+async def help(ctx):
+    """Display the help menu."""
+    embed = discord.Embed(title="🎰 Paradox Casino Help", description="Welcome to the Paradox Casino Machine!", color=0x3498db)
+    embed.add_field(
+        name="Utility",
+        value="`!setannouncement [#channel] [message]` - Set daily shop reset channel/message",
+        inline=False
+    )
+    # Add other sections (e.g., Gambling Games) as needed based on your existing commands
+    embed.set_footer(text="Paradox Casino Machine | Powered by Luck")
+    await ctx.send(embed=embed)        
 
-def initialize_missions(user_id):
-    """Initialize missions for a user."""
-    missions = {
-        "daily": {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS["daily"]},
-        "weekly": {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS["weekly"]},
-        "one-time": {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS["one-time"]}
-    }
-    update_user_missions(user_id, missions)
+# --- Game Functions ---
 
-def reset_missions(user_id, mission_type):
-    """Reset missions of a specific type."""
-    missions = get_user_missions(user_id)
-    if mission_type in missions:
-        missions[mission_type] = {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS[mission_type]}
-        update_user_missions(user_id, missions)
-
-# --- Slot Machine Functions ---
 def spin_slots(lines):
-    """Generate slot spin result."""
+    """Generate slot machine results."""
     return [[random.choice(SLOTS) for _ in range(3)] for _ in range(lines)]
 
 def check_win(slots):
-    """Check for wins and calculate winnings."""
+    """Check slot machine results for winnings."""
     winnings = 0
     jackpot_win = False
     winning_lines = []
     for i, line in enumerate(slots):
-        if line.count(line[0]) == 3:
+        if line[0] == line[1] == line[2]:
             multiplier = JACKPOT_MULTIPLIER if line[0] == JACKPOT_SYMBOL else 1
             line_win = 100 * multiplier
             winnings += line_win
@@ -420,44 +431,34 @@ def check_win(slots):
                 jackpot_win = True
     return winnings, jackpot_win, winning_lines
 
-def format_animated_slots(slots, revealed_columns):
-    """Format slots for animation."""
-    display_lines = []
-    for line in slots:
-        line_display = [line[i] if i in revealed_columns else '🎰' for i in range(3)]
-        display_lines.append(' '.join(line_display))
-    return '\n'.join(display_lines)
-
-def format_slot_display(slots, winning_lines=None):
-    """Format slot display with winning lines."""
-    if winning_lines is None:
-        winning_lines = []
-    winning_line_indices = {line[0]: line[1] for line in winning_lines}
-    display_lines = []
+def format_slot_display(slots, winning_lines):
+    """Format the slot display for output."""
+    winning_dict = dict(winning_lines)
+    display = []
     for i, line in enumerate(slots):
-        if i in winning_line_indices:
-            display_lines.append(f"▶️ {' '.join(line)} ◀️ +${winning_line_indices[i]}")
+        if i in winning_dict:
+            display.append(f"▶️ {' '.join(line)} ◀️ +${winning_dict[i]}")
         else:
-            display_lines.append(f"   {' '.join(line)}")
-    return '\n'.join(display_lines)
+            display.append(f"   {' '.join(line)}")
+    return '\n'.join(display)
 
-# --- Roulette Functions ---
 def get_roulette_color(number):
-    """Determine roulette number color."""
+    """Determine the color of a roulette number."""
     if number in RED_NUMBERS:
         return "red"
     elif number in BLACK_NUMBERS:
         return "black"
-    return "green"
+    else:
+        return "green"
 
 def validate_roulette_bet(bet_type, bet_value):
-    """Validate roulette bet."""
+    """Validate roulette bet type and value."""
     if bet_type not in ROULETTE_BETS:
         return False
     return ROULETTE_BETS[bet_type]["validator"](bet_value)
 
 def calculate_roulette_payout(bet_type, bet_value, spun_number):
-    """Calculate roulette payout."""
+    """Calculate roulette payout based on bet."""
     color = get_roulette_color(spun_number)
     if bet_type == "number":
         return ROULETTE_BETS[bet_type]["payout"] if spun_number == int(bet_value) else 0
@@ -466,419 +467,2791 @@ def calculate_roulette_payout(bet_type, bet_value, spun_number):
     elif bet_type == "parity":
         if spun_number == 0:
             return 0
-        parity = "even" if spun_number % 2 == 0 else "odd"
-        return ROULETTE_BETS[bet_type]["payout"] if parity == bet_value.lower() else 0
+        return ROULETTE_BETS[bet_type]["payout"] if (spun_number % 2 == 0) == (bet_value.lower() == "even") else 0
     elif bet_type == "range":
         if spun_number == 0:
             return 0
-        range_type = "low" if 1 <= spun_number <= 18 else "high"
-        return ROULETTE_BETS[bet_type]["payout"] if range_type == bet_value.lower() else 0
+        return ROULETTE_BETS[bet_type]["payout"] if (spun_number > 18) == (bet_value.lower() == "high") else 0
     elif bet_type == "dozen":
-        dozens = {"first": (1, 12), "second": (13, 24), "third": (25, 36)}
-        if spun_number == 0:
-            return 0
-        for dozen, (low, high) in dozens.items():
-            if low <= spun_number <= high and dozen == bet_value.lower():
-                return ROULETTE_BETS[bet_type]["payout"]
-        return 0
+        ranges = {"first": range(1, 13), "second": range(13, 25), "third": range(25, 37)}
+        return ROULETTE_BETS[bet_type]["payout"] if spun_number in ranges[bet_value.lower()] else 0
     elif bet_type == "column":
-        columns = {
-            1: [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34],
-            2: [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35],
-            3: [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]
-        }
-        if spun_number == 0:
-            return 0
-        return ROULETTE_BETS[bet_type]["payout"] if spun_number in columns[int(bet_value)] else 0
+        column = int(bet_value)
+        return ROULETTE_BETS[bet_type]["payout"] if spun_number % 3 == column - 1 else 0
     return 0
 
-# --- Poker Functions ---
 def deal_poker_hand():
     """Deal a 5-card poker hand."""
-    deck = POKER_CARDS.copy()
+    deck = DECK.copy()
     random.shuffle(deck)
     return deck[:5]
 
 def evaluate_poker_hand(hand):
-    """Evaluate poker hand rank and payout."""
-    ranks = sorted([card[:-1].replace('T', '10').replace('J', '11').replace('Q', '12').replace('K', '13').replace('A', '14') for card in hand], key=int, reverse=True)
+    """Evaluate a poker hand and return the best combination."""
+    ranks = [card[:-1] for card in hand]
     suits = [card[-1] for card in hand]
-    rank_values = [int(r) for r in ranks]
+    rank_counts = {rank: ranks.count(rank) for rank in set(ranks)}
+    sorted_ranks = sorted([CARD_RANKS.index(r) for r in ranks], reverse=True)
     is_flush = len(set(suits)) == 1
-    is_straight = all(rank_values[i] - 1 == rank_values[i + 1] for i in range(4)) or (ranks == ['14', '5', '4', '3', '2'])
-    counts = {r: ranks.count(r) for r in ranks}
-    count_values = sorted(counts.values(), reverse=True)
-    if is_flush and is_straight and ranks[0] == '14':
-        return "Royal Flush", POKER_HANDS["Royal Flush"]
+    is_straight = all(sorted_ranks[i] - sorted_ranks[i + 1] == 1 for i in range(4)) or (sorted_ranks == [12, 3, 2, 1, 0])
+
+    if is_flush and sorted_ranks == [12, 11, 10, 9, 8]:
+        return "royal_flush"
     elif is_flush and is_straight:
-        return "Straight Flush", POKER_HANDS["Straight Flush"]
-    elif count_values[0] == 4:
-        return "Four of a Kind", POKER_HANDS["Four of a Kind"]
-    elif count_values == [3, 2]:
-        return "Full House", POKER_HANDS["Full House"]
+        return "straight_flush"
+    elif 4 in rank_counts.values():
+        return "four_of_a_kind"
+    elif 3 in rank_counts.values() and 2 in rank_counts.values():
+        return "full_house"
     elif is_flush:
-        return "Flush", POKER_HANDS["Flush"]
+        return "flush"
     elif is_straight:
-        return "Straight", POKER_HANDS["Straight"]
-    elif count_values[0] == 3:
-        return "Three of a Kind", POKER_HANDS["Three of a Kind"]
-    elif count_values == [2, 2, 1]:
-        return "Two Pair", POKER_HANDS["Two Pair"]
-    elif count_values[0] == 2:
-        return "One Pair", POKER_HANDS["One Pair"]
-    return "High Card", POKER_HANDS["High Card"]
-
-# --- Blackjack Functions ---
-def deal_blackjack_hand():
-    """Deal a 2-card blackjack hand."""
-    deck = BLACKJACK_CARDS.copy()
-    random.shuffle(deck)
-    return deck[:2]
-
-def calculate_blackjack_score(hand):
-    """Calculate blackjack hand score."""
-    score = 0
-    aces = 0
-    for card in hand:
-        value = CARD_VALUES[card[:-1]]
-        if value == 11:
-            aces += 1
-        score += value
-    while score > 21 and aces:
-        score -= 10
-        aces -= 1
-    return score
-
-# --- Craps Functions ---
-def roll_dice():
-    """Roll two dice."""
-    return random.randint(1, 6), random.randint(1, 6)
-
-def play_craps(bet_type, amount, user_id):
-    """Play a Craps round."""
-    user_data = get_user_data(user_id)
-    if amount <= 0 or amount > user_data['balance']:
-        return "Invalid bet!", None, user_data['balance']
-    update_user_data(user_id, {'balance': user_data['balance'] - amount})
-    dice1, dice2 = roll_dice()
-    total = dice1 + dice2
-    if bet_type == "pass":
-        if total in CRAPS_PASS_LINE["win"]:
-            payout = amount
-        elif total in CRAPS_PASS_LINE["lose"]:
-            payout = -amount
-        else:
-            point = total
-            while True:
-                dice1, dice2 = roll_dice()
-                total = dice1 + dice2
-                if total == point:
-                    payout = amount
-                    break
-                elif total == 7:
-                    payout = -amount
-                    break
-    elif bet_type == "dont_pass":
-        if total in CRAPS_DONT_PASS["win"]:
-            payout = amount
-        elif total in CRAPS_DONT_PASS["lose"]:
-            payout = -amount
-        elif total in CRAPS_DONT_PASS["push"]:
-            payout = 0
-        else:
-            point = total
-            while True:
-                dice1, dice2 = roll_dice()
-                total = dice1 + dice2
-                if total == point:
-                    payout = -amount
-                    break
-                elif total == 7:
-                    payout = amount
-                    break
+        return "straight"
+    elif 3 in rank_counts.values():
+        return "three_of_a_kind"
+    elif list(rank_counts.values()).count(2) == 2:
+        return "two_pair"
+    elif 2 in rank_counts.values() and max(CARD_RANKS.index(r) for r, c in rank_counts.items() if c == 2) >= 9:
+        return "pair"
     else:
-        return "Invalid bet type!", None, user_data['balance']
-    new_balance = user_data['balance'] - amount + (payout if payout > 0 else 0)
-    update_user_data(user_id, {'balance': new_balance})
-    return f"Rolled {dice1} + {dice2} = {total}. You {'win' if payout > 0 else 'lose'} ${abs(payout)}!", payout, new_balance
+        return "high_card"
 
-# --- Baccarat Functions ---
-def deal_baccarat_hands():
-    """Deal Baccarat hands."""
-    deck = BLACKJACK_CARDS.copy()
-    random.shuffle(deck)
-    return deck[:2], deck[2:4]
+def blackjack_value(cards):
+    """Calculate the value of a blackjack hand."""
+    value = 0
+    aces = 0
+    for card in cards:
+        rank = card[:-1]
+        if rank in ['J', 'Q', 'K']:
+            value += 10
+        elif rank == 'A':
+            aces += 1
+        else:
+            value += int(rank)
+    for _ in range(aces):
+        if value + 11 <= 21:
+            value += 11
+        else:
+            value += 1
+    return value
 
-def calculate_baccarat_score(hand):
-    """Calculate Baccarat score."""
-    return sum(CARD_VALUES[card[:-1]] for card in hand) % 10
+def roll_dice(n=2):
+    """Roll n dice and return the sum."""
+    return sum(random.randint(1, 6) for _ in range(n))
 
-def determine_baccarat_winner(player_score, banker_score):
-    """Determine Baccarat winner."""
-    if player_score > banker_score:
-        return "player"
-    elif banker_score > player_score:
-        return "banker"
-    return "tie"
+def baccarat_hand(cards):
+    """Calculate the value of a Baccarat hand."""
+    value = sum(10 if card[:-1] in ['10', 'J', 'Q', 'K'] else 1 if card[:-1] == 'A' else int(card[:-1]) for card in cards) % 10
+    return value
 
-# --- Additional Game Classes ---
-class TicTacToe:
-    def __init__(self):
-        self.board = [[" " for _ in range(3)] for _ in range(3)]
-        self.current_player = "X"
-        self.game_active = False
-        self.players = {}
+def generate_bingo_card():
+    """Generate a 5x5 bingo card."""
+    card = []
+    for col, letter in enumerate('BINGO'):
+        if letter == 'N':
+            numbers = random.sample(range(col * 15 + 1, col * 15 + 16), 4)
+            card.append(numbers[:2] + [None] + numbers[2:])
+        else:
+            card.append(random.sample(range(col * 15 + 1, col * 15 + 16), 5))
+    return list(zip(*card))
 
-    def display_board(self):
-        return f"```\n  0 1 2\n0 {self.board[0][0]}|{self.board[0][1]}|{self.board[0][2]}\n  -+-+-\n1 {self.board[1][0]}|{self.board[1][1]}|{self.board[1][2]}\n  -+-+-\n2 {self.board[2][0]}|{self.board[2][1]}|{self.board[2][2]}\n```"
-
-    def make_move(self, row, col, player):
-        if 0 <= row <= 2 and 0 <= col <= 2 and self.board[row][col] == " ":
-            self.board[row][col] = player
+def check_bingo_win(card, called_numbers):
+    """Check if a bingo card has a winning line."""
+    for row in card:
+        if all(num in called_numbers for num in row if num is not None):
             return True
-        return False
+    for col in zip(*card):
+        if all(num in called_numbers for num in col if num is not None):
+            return True
+    if all(card[i][i] in called_numbers for i in range(5) if card[i][i] is not None):
+        return True
+    if all(card[i][4 - i] in called_numbers for i in range(5) if card[i][4 - i] is not None):
+        return True
+    return False
 
-    def check_win(self):
-        for row in self.board:
-            if row[0] == row[1] == row[2] != " ":
-                return row[0]
-        for col in range(3):
-            if self.board[0][col] == self.board[1][col] == self.board[2][col] != " ":
-                return self.board[0][col]
-        if self.board[0][0] == self.board[1][1] == self.board[2][2] != " ":
-            return self.board[0][0]
-        if self.board[0][2] == self.board[1][1] == self.board[2][0] != " ":
-            return self.board[0][2]
-        return None
+# --- Economy Functions ---
 
-    def is_full(self):
-        return all(cell != " " for row in self.board for cell in row)
-
-game = TicTacToe()
-
-HANGMAN_WORDS = ["luck", "casino", "jackpot", "paradox", "gamble", "slots", "dice"]
-HANGMAN_STAGES = [
-    "```\n  _____\n  |   |\n      |\n      |\n      |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n      |\n      |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n  |   |\n      |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n /|   |\n      |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n /|\\  |\n      |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========\n```",
-    "```\n  _____\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========\n```"
-]
-
-class HangmanGame:
-    def __init__(self):
-        self.word = random.choice(HANGMAN_WORDS).upper()
-        self.guessed = set()
-        self.wrong_guesses = 0
-        self.active = False
-
-    def display_word(self):
-        return " ".join(c if c in self.guessed else "_" for c in self.word)
-
-    def guess(self, letter):
-        letter = letter.upper()
-        if letter in self.guessed:
-            return "already guessed"
-        self.guessed.add(letter)
-        if letter not in self.word:
-            self.wrong_guesses += 1
-            return "wrong"
-        return "correct" if all(c in self.guessed for c in self.word) else "partial"
-
-hangman_game = HangmanGame()
-
-class NumberGuessGame:
-    def __init__(self):
-        self.number = random.randint(1, 100)
-        self.guesses_left = 20
-        self.guesses_made = 0
-        self.active = False
-
-    def guess(self, number):
-        self.guesses_made += 1
-        self.guesses_left -= 1
-        if number == self.number:
-            return "correct"
-        return "higher" if number < self.number else "lower"
-
-number_guess_game = NumberGuessGame()
-
-TRIVIA_QUESTIONS = [
-    {"question": "Highest Blackjack score?", "options": ["20", "21", "22", "23"], "correct": 1},
-    {"question": "Jackpot symbol in slots?", "options": ["🍒", "💎", "7️⃣", "🔔"], "correct": 2},
-    {"question": "First game added?", "options": ["Tic-Tac-Toe", "Slots", "Wheel", "Blackjack"], "correct": 1}
-]
-
-RPS_CHOICES = ["rock", "paper", "scissors"]
-def rps_outcome(player, bot_choice):
-    if player == bot_choice:
-        return "tie"
-    if (player == "rock" and bot_choice == "scissors") or \
-       (player == "paper" and bot_choice == "rock") or \
-       (player == "scissors" and bot_choice == "paper"):
-        return "win"
-    return "lose"
-
-WHEEL_PRIZES = [0, 50, 100, 200, 500, 1000, "Jackpot"]
-
-# --- XP and Leveling System ---
-def add_xp(user_id, amount):
-    """Add XP and handle level-ups."""
+def add_item_drop(user_id, game):
+    """Add a random item drop based on game played."""
     user_data = get_user_data(user_id)
     inventory = json.loads(user_data['inventory'])
-    boosts = inventory.get('boosts', {})
-    xp_multiplier = 2 if 'xp_boost' in boosts and datetime.fromisoformat(boosts['xp_boost']) > datetime.utcnow() else 1
-    xp = user_data['xp'] + amount * xp_multiplier
+    for item_id, info in ITEM_DROP_TABLE.items():
+        if info['source'] == game and random.random() < info['chance']:
+            inventory[item_id] = inventory.get(item_id, 0) + 1
+            update_user_data(user_id, {'inventory': json.dumps(inventory)})
+            return item_id
+    return None
+
+def can_craft(user_id, recipe_id):
+    """Check if a user can craft an item."""
+    user_data = get_user_data(user_id)
+    inventory = json.loads(user_data['inventory'])
+    recipe = CRAFTING_RECIPES.get(recipe_id)
+    if not recipe:
+        return False
+    return all(inventory.get(item, 0) >= qty for item, qty in recipe['ingredients'].items())
+
+def craft_item(user_id, recipe_id):
+    """Craft an item and update inventory."""
+    user_data = get_user_data(user_id)
+    inventory = json.loads(user_data['inventory'])
+    recipe = CRAFTING_RECIPES[recipe_id]
+    for item, qty in recipe['ingredients'].items():
+        inventory[item] -= qty
+    inventory[recipe_id] = inventory.get(recipe_id, 0) + 1
+    update_user_data(user_id, {'inventory': json.dumps(inventory)})
+
+# --- Utility Functions ---
+
+def add_xp(user_id, amount):
+    """Add XP to a user and handle leveling."""
+    user_data = get_user_data(user_id)
+    xp = user_data['xp'] + amount
     level = user_data['level']
-    levels_gained = 0
     while xp >= 100 * level:
         xp -= 100 * level
         level += 1
-        levels_gained += 1
-    update_user_data(user_id, {
-        'xp': xp,
-        'level': level,
-        'balance': user_data['balance'] + 500 * levels_gained
-    })
-    return levels_gained
+        # Add level-up bonus
+        update_user_data(user_id, {'balance': user_data['balance'] + 100})
+    update_user_data(user_id, {'xp': xp, 'level': level})
 
-# --- Achievements System ---
-def check_achievements(user_id, bet_amount, win_amount, jackpot_win, balance, streaks, game_type=None):
-    """Check and award achievements."""
+def update_mission_progress(user_id, mission_type, progress_key, amount=1):
+    """Update mission progress for a user."""
     user_data = get_user_data(user_id)
-    achievements = json.loads(user_data['achievements'])
-    earned = []
-    streaks = json.loads(streaks) if isinstance(streaks, str) else streaks
-    if win_amount > 0 and "first_win" not in achievements:
-        earned.append("first_win")
-    if win_amount >= 1000 and "big_winner" not in achievements:
-        earned.append("big_winner")
-    if jackpot_win and "jackpot" not in achievements:
-        earned.append("jackpot")
-    if balance == 0 and "broke" not in achievements:
-        earned.append("broke")
-    if balance <= 100 and win_amount > 0 and "comeback" not in achievements:
-        earned.append("comeback")
-    if bet_amount == MAX_BET and "high_roller" not in achievements:
-        earned.append("high_roller")
-    if streaks.get('daily', 0) >= 7 and "daily_streak" not in achievements:
-        earned.append("daily_streak")
-    if streaks.get('wins', 0) >= 5 and "legendary" not in achievements:
-        earned.append("legendary")
-    if game_type == "rps" and win_amount > 0 and streaks.get('rps_wins', 0) >= 5 and "rps_master" not in achievements:
-        earned.append("rps_master")
-    if game_type == "blackjack" and win_amount > 0 and streaks.get('blackjack_wins', 0) >= 3 and "blackjack_pro" not in achievements:
-        earned.append("blackjack_pro")
-    if game_type == "roulette" and win_amount > 0 and "roulette_master" not in achievements:
-        earned.append("roulette_master")
-    if game_type == "poker" and win_amount > 0 and "poker_pro" not in achievements:
-        earned.append("poker_pro")
-    if game_type == "craps" and win_amount > 0 and "craps_winner" not in achievements:
-        earned.append("craps_winner")
-    if game_type == "baccarat" and win_amount > 0 and "baccarat_champ" not in achievements:
-        earned.append("baccarat_champ")
-    if user_data['trivia_correct'] >= 10 and "trivia_genius" not in achievements:
-        earned.append("trivia_genius")
-    if user_data['hangman_wins'] >= 5 and "hangman_hero" not in achievements:
-        earned.append("hangman_hero")
-    if user_data['number_guesses'] > 0 and user_data['number_guesses'] <= 10 and "number_wizard" not in achievements:
-        earned.append("number_wizard")
-    if streaks.get('coinflip_wins', 0) >= 3 and "coinflip_streak" not in achievements:
-        earned.append("coinflip_streak")
-    if streaks.get('dice_wins', 0) >= 5 and "dice_master" not in achievements:
-        earned.append("dice_master")
-    update_user_data(user_id, {'achievements': json.dumps(achievements + earned)})
-    return earned
-
-# --- Crafting and Trading ---
-def check_crafting_eligibility(user_id, recipe_id):
-    """Check crafting eligibility."""
-    user_data = get_user_data(user_id)
-    inventory = json.loads(user_data['inventory'])
-    crafting_items = json.loads(user_data['crafting_items'])
-    recipe = CRAFTING_RECIPES.get(recipe_id)
-    if not recipe or 'crafting_kit' not in inventory:
-        return False, "Need a crafting kit!"
-    for item, qty in recipe['ingredients'].items():
-        if crafting_items.get(item, 0) < qty:
-            return False, f"Not enough {item}!"
-    return True, "Eligible"
-
-def craft_item(user_id, recipe_id):
-    """Craft an item."""
-    eligible, message = check_crafting_eligibility(user_id, recipe_id)
-    if not eligible:
-        return message
-    user_data = get_user_data(user_id)
-    crafting_items = json.loads(user_data['crafting_items'])
-    recipe = CRAFTING_RECIPES[recipe_id]
-    for item, qty in recipe['ingredients'].items():
-        crafting_items[item] -= qty
-    active_effects = json.loads(user_data['active_effects'])
-    if recipe_id == "lucky_charm":
-        active_effects[recipe_id] = (datetime.utcnow() + timedelta(hours=1)).isoformat()
-    elif recipe_id == "mega_jackpot":
-        active_effects[recipe_id] = 1
-    update_user_data(user_id, {
-        'crafting_items': json.dumps(crafting_items),
-        'active_effects': json.dumps(active_effects)
-    })
-    return f"Crafted {recipe_id}! {recipe['description']}"
-
-def award_drop(user_id, game_type):
-    """Award random crafting drop."""
-    user_data = get_user_data(user_id)
-    crafting_items = json.loads(user_data['crafting_items'])
-    for item, details in ITEM_DROP_TABLE.items():
-        if details['source'] == game_type and random.random() < details['chance']:
-            crafting_items[item] = crafting_items.get(item, 0) + 1
-            update_user_data(user_id, {'crafting_items': json.dumps(crafting_items)})
-            return f"Dropped {item}!"
-    return None
+    missions = json.loads(user_data['missions']) or {}
+    if mission_type not in missions:
+        missions[mission_type] = {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS[mission_type]}
+    for mission in MISSIONS[mission_type]:
+        mission_id = mission["id"]
+        if mission_id in missions[mission_type] and not missions[mission_type][mission_id]["completed"]:
+            if progress_key in mission["requirements"]:
+                missions[mission_type][mission_id]["progress"] += amount
+                if missions[mission_type][mission_id]["progress"] >= mission["requirements"][progress_key]:
+                    missions[mission_type][mission_id]["completed"] = True
+                    for key, value in mission["rewards"].items():
+                        if key == "coins":
+                            update_user_data(user_id, {'balance': user_data['balance'] + value})
+                        elif key == "xp":
+                            add_xp(user_id, value)
+    update_user_data(user_id, {'missions': json.dumps(missions)})
 
 # --- Bot Events ---
+
 @bot.event
 async def on_ready():
     """Handle bot startup."""
-    logger.info(f'Logged in as {bot.user}')
-    await bot.change_presence(activity=discord.Game(name="!paradox for commands"))
-    bot.loop.create_task(casino_announcements())
-    bot.loop.create_task(lottery_draw_task())
-    bot.loop.create_task(save_data_periodically())
-    bot.loop.create_task(daily_announcement_task())
+    logger.info(f'Bot logged in as {bot.user} (ID: {bot.user.id})')
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="!help"))
+    init_db()
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Handle command errors."""
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Command on cooldown. Retry in {error.retry_after:.1f}s.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Missing argument! Use `!help` for details.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Invalid argument! Use `!help` for details.")
+    else:
+        await ctx.send(f"❌ Error: {str(error)}")
+        logger.error(f"Command error: {error}")
+
+# --- Commands ---
+
+## Gambling Commands
+
+@bot.command()
+@commands.cooldown(1, 3, commands.BucketType.user)
+async def bet(ctx, amount: int, lines: int = 1):
+    """Spin the slot machine. Usage: !bet <amount> [lines]"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    total_bet = amount * lines
+
+    if not (MIN_BET <= amount <= MAX_BET and 1 <= lines <= MAX_LINES and total_bet <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}, lines 1-{MAX_LINES}. Balance: ${user_data['balance']}")
+        return
+
+    slots = spin_slots(lines)
+    winnings, jackpot_win, winning_lines = check_win(slots)
+    user_data['balance'] -= total_bet
+    user_data['balance'] += winnings
+    updates = {
+        'balance': user_data['balance'],
+        'winnings': user_data.get('winnings', 0) + winnings
+    }
+    update_user_data(user_id, updates)
+    add_xp(user_id, total_bet // 10)
+    update_mission_progress(user_id, "daily", "slot_plays")
+    item_drop = add_item_drop(user_id, "slots")
+
+    embed = discord.Embed(
+        title="🎰 Slot Result",
+        description=f"Bet: ${total_bet} | {'Won' if winnings > 0 else 'Lost'}: ${winnings if winnings > 0 else total_bet}",
+        color=0x2ecc71 if winnings > 0 else 0xe74c3c
+    )
+    embed.add_field(name="Spin", value=f"```\n{format_slot_display(slots, winning_lines)}\n```", inline=False)
+    embed.add_field(name="Balance", value=f"${user_data['balance']}", inline=True)
+    if item_drop:
+        embed.add_field(name="Item Drop", value=f"You found a {SHOP_ITEMS.get(item_drop, {'name': item_drop})['name']}!", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def roulette(ctx, bet_type: str, bet_value: str, amount: int):
+    """Play roulette. Usage: !roulette <bet_type> <bet_value> <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if amount <= 0 or amount > user_data['balance']:
+        await ctx.send("❌ Invalid bet amount!")
+        return
+
+    if not validate_roulette_bet(bet_type, bet_value):
+        await ctx.send("❌ Invalid bet type or value! Use: number (0-36), color (red/black), parity (even/odd), range (high/low), dozen (first/second/third), column (1-3)")
+        return
+
+    spun_number = random.randint(0, 36)
+    payout = calculate_roulette_payout(bet_type, bet_value, spun_number)
+    net_gain = payout * amount if payout > 0 else -amount
+    new_balance = user_data['balance'] + net_gain
+    updates = {'balance': new_balance}
+    if net_gain > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + net_gain
+        update_mission_progress(user_id, "daily", "roulette_wins")
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+    item_drop = add_item_drop(user_id, "roulette")
+
+    color = get_roulette_color(spun_number)
+    embed = discord.Embed(
+        title="🎡 Roulette Result",
+        description=f"Spun: {spun_number} ({color})\nBet: {bet_type} {bet_value} (${amount})\n{'Won' if net_gain > 0 else 'Lost'}: ${abs(net_gain)}",
+        color=0x2ecc71 if net_gain > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    if item_drop:
+        embed.add_field(name="Item Drop", value=f"You found a {SHOP_ITEMS.get(item_drop, {'name': item_drop})['name']}!", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def poker(ctx, amount: int):
+    """Play video poker. Usage: !poker <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    hand = deal_poker_hand()
+    combination = evaluate_poker_hand(hand)
+    payout = POKER_PAYOUTS[combination] * amount
+    new_balance = user_data['balance'] - amount + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+    item_drop = add_item_drop(user_id, "poker")
+
+    embed = discord.Embed(
+        title="🃏 Poker Result",
+        description=f"Bet: ${amount}\nHand: {' '.join(hand)}\nResult: {combination.replace('_', ' ').title()}\n{'Won' if payout > 0 else 'Lost'}: ${payout if payout > 0 else amount}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    if item_drop:
+        embed.add_field(name="Item Drop", value=f"You found a {SHOP_ITEMS.get(item_drop, {'name': item_drop})['name']}!", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def blackjack(ctx, amount: int):
+    """Play blackjack against the dealer. Usage: !blackjack <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    deck = DECK.copy()
+    random.shuffle(deck)
+    player_hand = [deck.pop(), deck.pop()]
+    dealer_hand = [deck.pop(), deck.pop()]
+
+    embed = discord.Embed(
+        title="♠️ Blackjack",
+        description=f"Your hand: {' '.join(player_hand)} (Value: {blackjack_value(player_hand)})\nDealer's hand: {dealer_hand[0]} ?",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")  # Hit
+    await msg.add_reaction("❌")  # Stand
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+
+    while blackjack_value(player_hand) < 21:
+        try:
+            reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+            if str(reaction.emoji) == "✅":
+                player_hand.append(deck.pop())
+                embed.description = f"Your hand: {' '.join(player_hand)} (Value: {blackjack_value(player_hand)})\nDealer's hand: {dealer_hand[0]} ?"
+                await msg.edit(embed=embed)
+            else:
+                break
+        except asyncio.TimeoutError:
+            break
+
+    player_value = blackjack_value(player_hand)
+    if player_value > 21:
+        result = "bust"
+        payout = -amount
+    else:
+        while blackjack_value(dealer_hand) < 17:
+            dealer_hand.append(deck.pop())
+        dealer_value = blackjack_value(dealer_hand)
+        if dealer_value > 21 or player_value > dealer_value:
+            result = "win"
+            payout = int(amount * (BLACKJACK_PAYOUT if player_value == 21 and len(player_hand) == 2 else 1))
+            update_user_data(user_id, {'blackjack_wins': user_data['blackjack_wins'] + 1})
+        elif player_value == dealer_value:
+            result = "push"
+            payout = 0
+        else:
+            result = "lose"
+            payout = -amount
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+    item_drop = add_item_drop(user_id, "blackjack")
+
+    embed = discord.Embed(
+        title="♠️ Blackjack Result",
+        description=f"Your hand: {' '.join(player_hand)} (Value: {player_value})\nDealer's hand: {' '.join(dealer_hand)} (Value: {dealer_value})\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    if item_drop:
+        embed.add_field(name="Item Drop", value=f"You found a {SHOP_ITEMS.get(item_drop, {'name': item_drop})['name']}!", inline=False)
+    await msg.edit(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def craps(ctx, amount: int, bet: str):
+    """Play a simplified game of craps. Usage: !craps <amount> <pass/dont_pass>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    bet = bet.lower()
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if bet not in ["pass", "dont_pass"]:
+        await ctx.send("❌ Bet must be 'pass' or 'dont_pass'!")
+        return
+
+    roll = roll_dice()
+    if roll in [7, 11]:
+        result = "win" if bet == "pass" else "lose"
+    elif roll in [2, 3, 12]:
+        result = "lose" if bet == "pass" else "win"
+    else:
+        point = roll
+        while True:
+            roll = roll_dice()
+            if roll == point:
+                result = "win" if bet == "pass" else "lose"
+                break
+            elif roll == 7:
+                result = "lose" if bet == "pass" else "win"
+                break
+
+    payout = amount if result == "win" else -amount
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+        updates['craps_wins'] = user_data['craps_wins'] + 1
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎲 Craps Result",
+        description=f"Initial Roll: {roll}\nBet: {bet} (${amount})\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def baccarat(ctx, amount: int, bet: str):
+    """Play baccarat. Usage: !baccarat <amount> <player/banker/tie>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    bet = bet.lower()
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if bet not in ["player", "banker", "tie"]:
+        await ctx.send("❌ Bet must be 'player', 'banker', or 'tie'!")
+        return
+
+    deck = DECK.copy()
+    random.shuffle(deck)
+    player_hand = [deck.pop(), deck.pop()]
+    banker_hand = [deck.pop(), deck.pop()]
+    player_value = baccarat_hand(player_hand)
+    banker_value = baccarat_hand(banker_hand)
+
+    if player_value > banker_value:
+        result = "player"
+        payout = amount if bet == "player" else -amount
+    elif banker_value > player_value:
+        result = "banker"
+        payout = int(amount * 0.95) if bet == "banker" else -amount  # 5% commission
+    else:
+        result = "tie"
+        payout = amount * 8 if bet == "tie" else -amount
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎴 Baccarat Result",
+        description=f"Player: {' '.join(player_hand)} (Value: {player_value})\nBanker: {' '.join(banker_hand)} (Value: {banker_value})\nBet: {bet} (${amount})\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 3, commands.BucketType.user)
+async def rps(ctx, choice: str, amount: int):
+    """Play Rock-Paper-Scissors. Usage: !rps <rock/paper/scissors> <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    choice = choice.lower()
+
+    if choice not in ["rock", "paper", "scissors"]:
+        await ctx.send("❌ Choice must be 'rock', 'paper', or 'scissors'!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    bot_choice = random.choice(["rock", "paper", "scissors"])
+    if choice == bot_choice:
+        result = "tie"
+        payout = 0
+    elif (choice == "rock" and bot_choice == "scissors") or (choice == "paper" and bot_choice == "rock") or (choice == "scissors" and bot_choice == "paper"):
+        result = "win"
+        payout = amount
+    else:
+        result = "lose"
+        payout = -amount
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+        updates['rps_wins'] = user_data['rps_wins'] + 1
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="✊ Rock-Paper-Scissors",
+        description=f"You chose: {choice}\nBot chose: {bot_choice}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 10, commands.BucketType.user)
+async def hangman(ctx, amount: int):
+    """Play Hangman for coins. Usage: !hangman <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    words = ["casino", "jackpot", "roulette", "blackjack"]
+    word = random.choice(words)
+    guessed = set()
+    display = ["_" for _ in word]
+    attempts = 6
+
+    embed = discord.Embed(
+        title="🔮 Hangman",
+        description=f"Word: {' '.join(display)}\nAttempts left: {attempts}\nGuess a letter!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+
+    while attempts > 0 and "_" in display:
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and len(m.content) == 1 and m.content.isalpha()
+
+        try:
+            guess = await bot.wait_for("message", timeout=30.0, check=check)
+            letter = guess.content.lower()
+            await guess.delete()
+            if letter in guessed:
+                embed.description = f"Word: {' '.join(display)}\nAttempts left: {attempts}\nYou've already guessed '{letter}'!"
+            elif letter in word:
+                guessed.add(letter)
+                for i, char in enumerate(word):
+                    if char == letter:
+                        display[i] = letter
+                embed.description = f"Word: {' '.join(display)}\nAttempts left: {attempts}\nGood guess!"
+            else:
+                guessed.add(letter)
+                attempts -= 1
+                embed.description = f"Word: {' '.join(display)}\nAttempts left: {attempts}\n'{letter}' not in word!"
+            await msg.edit(embed=embed)
+        except asyncio.TimeoutError:
+            embed.description = f"Word: {' '.join(display)}\nAttempts left: {attempts}\nTime's up!"
+            await msg.edit(embed=embed)
+            break
+
+    if "_" not in display:
+        payout = amount * 2
+        result = "win"
+    else:
+        payout = -amount
+        result = "lose"
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🔮 Hangman Result",
+        description=f"Word was: {word}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await msg.edit(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def guess(ctx, amount: int, number: int):
+    """Guess a number between 1 and 100. Usage: !guess <amount> <number>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if not (1 <= number <= 100):
+        await ctx.send("❌ Number must be between 1 and 100!")
+        return
+
+    target = random.randint(1, 100)
+    if number == target:
+        payout = amount * 10
+        result = "win"
+    else:
+        payout = -amount
+        result = "lose"
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🔢 Number Guessing",
+        description=f"Your guess: {number}\nNumber was: {target}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+# Local fallback questions in case API fails
+LOCAL_TRIVIA = [
+    {
+        "question": "What is the capital of France?",
+        "options": ["Paris", "London", "Berlin", "Madrid"],
+        "correct": "Paris",
+        "difficulty": "easy"
+    },
+    {
+        "question": "Which planet is known as the Red Planet?",
+        "options": ["Venus", "Mars", "Jupiter", "Saturn"],
+        "correct": "Mars",
+        "difficulty": "medium"
+    },
+    {
+        "question": "What is the powerhouse of the cell?",
+        "options": ["Nucleus", "Mitochondria", "Ribosome", "Golgi Apparatus"],
+        "correct": "Mitochondria",
+        "difficulty": "hard"
+    }
+]
+
+@bot.command()
+@commands.cooldown(1, 10, commands.BucketType.user)
+async def trivia(ctx, amount: int, difficulty: str = "medium"):
+    """Answer a trivia question with varying difficulty. Usage: !trivia <amount> [easy|medium|hard]"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    # Validate bet amount
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    # Validate difficulty
+    difficulty = difficulty.lower()
+    if difficulty not in ["easy", "medium", "hard"]:
+        await ctx.send("❌ Difficulty must be 'easy', 'medium', or 'hard'. Defaulting to 'medium'.")
+        difficulty = "medium"
+
+    # Multiplier based on difficulty
+    difficulty_multipliers = {"easy": 1.5, "medium": 2, "hard": 3}
+    multiplier = difficulty_multipliers[difficulty]
+
+    # Try fetching from API
+    question_data = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            asyncA with session.get(
+                f"https://opentdb.com/api.php?amount=1&type=multiple&difficulty={difficulty}",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data['response_code'] == 0:
+                        q = data['results'][0]
+                        question_data = {
+                            "question": html.unescape(q['question']),
+                            "options": [html.unescape(ans) for ans in q['incorrect_answers'] + [q['correct_answer']]],
+                            "correct": html.unescape(q['correct_answer'])
+                        }
+                        random.shuffle(question_data["options"])
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.warning(f"Trivia API failed: {e}. Using local question.")
+        # Fallback to local question
+        question_data = random.choice([q for q in LOCAL_TRIVIA if q["difficulty"] == difficulty])
+
+    if not question_data:
+        await ctx.send("❌ Failed to load a trivia question. Please try again later.")
+        return
+
+    question = question_data["question"]
+    options = question_data["options"]
+    correct_answer = question_data["correct"]
+    correct_index = options.index(correct_answer) + 1  # 1-based index
+
+    # Present question and options
+    options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
+    embed = discord.Embed(
+        title=f"❓ Trivia Challenge ({difficulty.capitalize()})",
+        description=f"Question: {question}\n\n**Options:**\n{options_text}\n\nBet: ${amount} | Multiplier: x{multiplier}\nAnswer with a number (1-4) within 30 seconds!",
+        color=0x3498db
+    )
+    embed.set_footer(text="Type your answer directly in the channel.")
+    msg = await ctx.send(embed=embed)
+
+    # Check for user's response
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.isdigit() and 1 <= int(m.content) <= 4
+
+    try:
+        response = await bot.wait_for("message", timeout=30.0, check=check)
+        answer = int(response.content)
+        await response.delete()  # Clean up the user's answer
+        if answer == correct_index:
+            payout = int(amount * multiplier)  # Win based on difficulty multiplier
+            result = "win"
+        else:
+            payout = -amount
+            result = "lose"
+    except asyncio.TimeoutError:
+        payout = -amount
+        result = "lose"
+        answer = "Time's up!"
+
+    # Update user data
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, int(amount * (multiplier / 2)))  # XP scales with difficulty
+
+    # Show result
+    result_embed = discord.Embed(
+        title=f"❓ Trivia Result ({difficulty.capitalize()})",
+        description=f"Question: {question}\nYour answer: {options[answer-1] if isinstance(answer, int) else answer}\nCorrect answer: {correct_answer}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    result_embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    result_embed.add_field(name="XP Gained", value=f"+{int(amount * (multiplier / 2))}", inline=True)
+    await msg.edit(embed=result_embed)
+
+    
+@bot.command()
+@commands.cooldown(1, 3, commands.BucketType.user)
+async def coinflip(ctx, choice: str, amount: int):
+    """Flip a coin. Usage: !coinflip <heads/tails> <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    choice = choice.lower()
+
+    if choice not in ["heads", "tails"]:
+        await ctx.send("❌ Choice must be 'heads' or 'tails'!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    result = random.choice(["heads", "tails"])
+    payout = amount if choice == result else -amount
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🪙 Coinflip",
+        description=f"You chose: {choice}\nResult: {result}\n{'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 3, commands.BucketType.user)
+async def dice(ctx, amount: int, prediction: int):
+    """Roll two dice and predict the sum. Usage: !dice <amount> <prediction>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if not (2 <= prediction <= 12):
+        await ctx.send("❌ Prediction must be between 2 and 12!")
+        return
+
+    roll = roll_dice()
+    payout = amount * 5 if roll == prediction else -amount
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎲 Dice Roll",
+        description=f"Your prediction: {prediction}\nRoll: {roll}\n{'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def wheel(ctx, amount: int):
+    """Spin the Wheel of Fortune. Usage: !wheel <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    prize = random.choice(WHEEL_PRIZES)
+    if prize == "Jackpot":
+        winnings = get_lottery_jackpot()
+        update_lottery_jackpot(-winnings + 1000)
+    else:
+        winnings = prize
+    new_balance = user_data['balance'] - amount + winnings
+    updates = {'balance': new_balance}
+    if winnings > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + winnings
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎡 Wheel of Fortune",
+        description=f"Bet: ${amount}\nPrize: {prize if prize != 'Jackpot' else f'${winnings} Jackpot'}\n{'Won' if winnings > 0 else 'Lost'}: ${winnings if winnings > 0 else amount}",
+        color=0x2ecc71 if winnings > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 3, commands.BucketType.user)
+async def scratch(ctx):
+    """Buy and scratch a card for a prize. Usage: !scratch"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if SCRATCH_PRICE > user_data['balance']:
+        await ctx.send(f"❌ Scratch card costs ${SCRATCH_PRICE}. Balance: ${user_data['balance']}")
+        return
+
+    prizes = random.choices(SCRATCH_PRIZES, k=3)
+    winnings = sum(1 for p in prizes if p > 0) >= 2 and max(prizes) or 0
+    new_balance = user_data['balance'] - SCRATCH_PRICE + winnings
+    updates = {'balance': new_balance}
+    if winnings > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + winnings
+    update_user_data(user_id, updates)
+    add_xp(user_id, SCRATCH_PRICE // 10)
+
+    embed = discord.Embed(
+        title="🎟️ Scratch Card",
+        description=f"Cost: ${SCRATCH_PRICE}\nScratched: {', '.join(map(str, prizes))}\n{'Won' if winnings > 0 else 'Lost'}: ${winnings if winnings > 0 else SCRATCH_PRICE}",
+        color=0x2ecc71 if winnings > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def bingo(ctx, amount: int):
+    """Play a game of bingo. Usage: !bingo <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    card = generate_bingo_card()
+    called_numbers = set()
+    embed = discord.Embed(
+        title="🎱 Bingo",
+        description=f"Your card:\n```\n{' '.join(str(n).rjust(2) if n else ' X' for row in card for n in row)}\n```\nBet: ${amount}\nNumbers called: None",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+
+    for _ in range(10):  # Simulate 10 calls
+        await asyncio.sleep(3)
+        number = random.choice([n for n in BINGO_NUMBERS if n not in called_numbers])
+        called_numbers.add(number)
+        embed.description = f"Your card:\n```\n{' '.join(str(n).rjust(2) if n else ' X' for row in card for n in row)}\n```\nBet: ${amount}\nNumbers called: {', '.join(map(str, called_numbers))}"
+        await msg.edit(embed=embed)
+        if check_bingo_win(card, called_numbers):
+            break
+
+    if check_bingo_win(card, called_numbers):
+        payout = amount * 5
+        result = "win"
+    else:
+        payout = -amount
+        result = "lose"
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎱 Bingo Result",
+        description=f"Your card:\n```\n{' '.join(str(n).rjust(2) if n else ' X' for row in card for n in row)}\n```\nNumbers called: {', '.join(map(str, called_numbers))}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def highlow(ctx, amount: int, guess: str):
+    """Guess if the next card is higher or lower. Usage: !highlow <amount> <high/low>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    guess = guess.lower()
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if guess not in ["high", "low"]:
+        await ctx.send("❌ Guess must be 'high' or 'low'!")
+        return
+
+    deck = DECK.copy()
+    random.shuffle(deck)
+    current_card = deck.pop()
+    next_card = deck.pop()
+    current_value = CARD_RANKS.index(current_card[:-1]) + 2  # 2-14 scale
+    next_value = CARD_RANKS.index(next_card[:-1]) + 2
+
+    if (guess == "high" and next_value > current_value) or (guess == "low" and next_value < current_value):
+        payout = amount
+        result = "win"
+    elif next_value == current_value:
+        payout = 0
+        result = "tie"
+    else:
+        payout = -amount
+        result = "lose"
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎴 High-Low",
+        description=f"Current card: {current_card} ({current_value})\nNext card: {next_card} ({next_value})\nGuess: {guess}\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.channel)
+async def slotrace(ctx, amount: int):
+    """Start a slot race with others. Usage: !slotrace <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="🏁 Slot Race",
+        description=f"Bet: ${amount}\nJoin with ✅ within 15 seconds!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return str(reaction.emoji) == "✅" and reaction.message.id == msg.id and user != bot.user
+
+    players = {user_id: user_data}
+    try:
+        async with asyncio.timeout(15):
+            while True:
+                reaction, user = await bot.wait_for("reaction_add", check=check)
+                if user.id not in players and MIN_BET <= amount <= MAX_BET and get_user_data(user.id)['balance'] >= amount:
+                    players[user.id] = get_user_data(user.id)
+                    await ctx.send(f"{user.mention} joined the race!")
+    except asyncio.TimeoutError:
+        pass
+
+    if len(players) < 2:
+        await ctx.send("❌ Not enough players joined the race!")
+        return
+
+    results = {}
+    for player_id in players:
+        slots = spin_slots(1)
+        winnings, _, _ = check_win(slots)
+        results[player_id] = {"winnings": winnings, "slots": slots[0]}
+        update_user_data(player_id, {'balance': players[player_id]['balance'] - amount})
+
+    winner_id = max(results, key=lambda x: results[x]["winnings"])
+    prize = amount * len(players)
+    new_balance = players[winner_id]['balance'] - amount + prize
+    update_user_data(winner_id, {
+        'balance': new_balance,
+        'winnings': players[winner_id].get('winnings', 0) + prize
+    })
+    for player_id in players:
+        add_xp(player_id, amount // 10)
+
+    embed = discord.Embed(title="🏁 Slot Race Results", color=0x2ecc71)
+    for player_id, data in results.items():
+        embed.add_field(
+            name=f"<@{player_id}>",
+            value=f"{' '.join(data['slots'])} (+${data['winnings']}) {'🏆' if player_id == winner_id else ''}",
+            inline=False
+        )
+    embed.add_field(name="Winner", value=f"<@{winner_id}> wins ${prize}!", inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def tictactoe(ctx, opponent: discord.Member, amount: int):
+    """Play Tic-Tac-Toe against another user. Usage: !tictactoe <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't play against yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="⭕ Tic-Tac-Toe Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30 seconds!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    board = [" " for _ in range(9)]
+    players = {user_id: "X", opponent_id: "O"}
+    turn = user_id
+
+    def display_board():
+        return f"```\n{board[0]} | {board[1]} | {board[2]}\n---------\n{board[3]} | {board[4]} | {board[5]}\n---------\n{board[6]} | {board[7]} | {board[8]}\n```"
+
+    embed = discord.Embed(
+        title="⭕ Tic-Tac-Toe",
+        description=f"{display_board()}\n<@{turn}>'s turn (X). Move: 1-9",
+        color=0x3498db
+    )
+    game_msg = await ctx.send(embed=embed)
+
+    def check_win():
+        wins = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+        return any(board[a] == board[b] == board[c] != " " for a, b, c in wins)
+
+    while " " in board:
+        def check(m):
+            return m.author.id == turn and m.channel == ctx.channel and m.content.isdigit() and 1 <= int(m.content) <= 9
+
+        try:
+            move = await bot.wait_for("message", timeout=30.0, check=check)
+            pos = int(move.content) - 1
+            await move.delete()
+            if board[pos] == " ":
+                board[pos] = players[turn]
+                embed.description = f"{display_board()}\n{'<@' + str(turn) + '> wins!' if check_win() else 'Tie!' if ' ' not in board else '<@' + str(opponent_id if turn == user_id else user_id) + '>’s turn (' + players[opponent_id if turn == user_id else user_id] + ')'}"
+                await game_msg.edit(embed=embed)
+                if check_win() or " " not in board:
+                    break
+                turn = opponent_id if turn == user_id else user_id
+            else:
+                await ctx.send(f"<@{turn}>, that spot is taken!", delete_after=5)
+        except asyncio.TimeoutError:
+            await ctx.send(f"<@{turn}> took too long! Game forfeited.")
+            turn = opponent_id if turn == user_id else user_id
+            break
+
+    winner_id = turn if check_win() else None
+    payout = amount * 2 if winner_id else 0
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed.color = 0x2ecc71 if winner_id else 0xe74c3c
+    embed.description += f"\nResult: {'<@' + str(winner_id) + '> wins $' + str(payout) if winner_id else 'Tie! No payout.'}"
+    await game_msg.edit(embed=embed)
+
+
+
+@bot.command()
+@commands.cooldown(1, 15, commands.BucketType.user)
+async def cardmatch(ctx, amount: int):
+    """Match pairs of cards. Usage: !cardmatch <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    cards = ["A♠", "A♠", "K♥", "K♥", "Q♦", "Q♦"]  # 3 pairs
+    random.shuffle(cards)
+    display = ["🂠" for _ in cards]
+    matches = 0
+
+    embed = discord.Embed(
+        title="🃏 Card Match",
+        description=f"Cards: {' '.join(display)}\nBet: ${amount}\nPick two positions (1-6) with `1 2` within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+
+    def check(m):
+        return (m.author == ctx.author and m.channel == ctx.channel and
+                len(m.content.split()) == 2 and all(x.isdigit() and 1 <= int(x) <= 6 for x in m.content.split()))
+
+    for _ in range(3):  # 3 attempts
+        try:
+            guess = await bot.wait_for("message", timeout=30.0, check=check)
+            pos1, pos2 = [int(x) - 1 for x in guess.content.split()]
+            await guess.delete()
+            if pos1 == pos2 or display[pos1] != "🂠" or display[pos2] != "🂠":
+                embed.description = f"Cards: {' '.join(display)}\nInvalid move! Try again."
+                await msg.edit(embed=embed)
+                continue
+            display[pos1] = cards[pos1]
+            display[pos2] = cards[pos2]
+            embed.description = f"Cards: {' '.join(display)}\nFlipped {pos1+1} and {pos2+1}. {'Match!' if cards[pos1] == cards[pos2] else 'No match.'}"
+            await msg.edit(embed=embed)
+            if cards[pos1] == cards[pos2]:
+                matches += 1
+            else:
+                await asyncio.sleep(2)
+                display[pos1] = display[pos2] = "🂠"
+                embed.description = f"Cards: {' '.join(display)}\nPick again!"
+                await msg.edit(embed=embed)
+        except asyncio.TimeoutError:
+            break
+
+    payout = amount * matches - amount if matches > 0 else -amount
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🃏 Card Match Result",
+        description=f"Matches: {matches}/3\nResult: {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 10, commands.BucketType.user)
+async def crash(ctx, amount: int):
+    """Bet on a multiplier before it crashes. Usage: !crash <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    multiplier = 1.0
+    crashed = False
+    embed = discord.Embed(
+        title="💥 Crash",
+        description=f"Bet: ${amount}\nMultiplier: {multiplier:.2f}x\nCash out with ✅ or wait...",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    async def update_multiplier():
+        nonlocal multiplier, crashed
+        while not crashed:
+            await asyncio.sleep(1)
+            multiplier += random.uniform(0.1, 0.5)
+            if random.random() < 0.15:  # 15% chance to crash each second
+                crashed = True
+            embed.description = f"Bet: ${amount}\nMultiplier: {multiplier:.2f}x\n{'Crashed!' if crashed else 'Cash out with ✅ or wait...'}"
+            await msg.edit(embed=embed)
+
+    bot.loop.create_task(update_multiplier())
+    try:
+        await bot.wait_for("reaction_add", timeout=15.0, check=check)
+        if not crashed:
+            payout = int(amount * multiplier) - amount
+            result = "win"
+        else:
+            payout = -amount
+            result = "lose"
+    except asyncio.TimeoutError:
+        payout = -amount if crashed else int(amount * multiplier) - amount
+        result = "lose" if crashed else "win"
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="💥 Crash Result",
+        description=f"Final Multiplier: {multiplier:.2f}x\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def diceduel(ctx, opponent: discord.Member, amount: int):
+    """Challenge another player to a dice duel. Usage: !diceduel <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't duel yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="🎲 Dice Duel Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} to a dice duel for ${amount}!\n{opponent.mention}, accept with ✅ within 30 seconds!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    user_roll = roll_dice(2)
+    opponent_roll = roll_dice(2)
+    if user_roll > opponent_roll:
+        winner_id = user_id
+        payout = amount * 2
+        result = f"{ctx.author.mention} wins!"
+    elif opponent_roll > user_roll:
+        winner_id = opponent_id
+        payout = amount * 2
+        result = f"{opponent.mention} wins!"
+    else:
+        winner_id = None
+        payout = 0
+        result = "It's a tie!"
+
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎲 Dice Duel Result",
+        description=f"{ctx.author.mention} rolled: {user_roll}\n{opponent.mention} rolled: {opponent_roll}\n{result}\n{'Won' if winner_id else 'Payout'}: ${payout}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    embed.add_field(name="Your New Balance", value=f"${get_user_data(user_id)['balance']}", inline=True)
+    embed.add_field(name="Opponent's New Balance", value=f"${get_user_data(opponent_id)['balance']}", inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 10, commands.BucketType.user)
+async def slotstreak(ctx, amount: int):
+    """Try for consecutive slot wins. Usage: !slotstreak <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    streak = 0
+    total_payout = -amount
+    embed = discord.Embed(
+        title="🎰 Slot Streak",
+        description=f"Bet: ${amount}\nStreak: {streak}\nSpin with ✅ or stop with ❌ (30s timeout)",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+
+    while True:
+        slots = spin_slots(1)
+        winnings, _, _ = check_win(slots)
+        if winnings > 0:
+            streak += 1
+            total_payout += winnings
+        else:
+            break
+
+        embed.description = f"Bet: ${amount}\nSpin: {' '.join(slots[0])}\nStreak: {streak}\nWinnings: ${total_payout + amount}\nSpin again with ✅ or stop with ❌"
+        embed.color = 0x2ecc71
+        await msg.edit(embed=embed)
+
+        try:
+            reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+            if str(reaction.emoji) == "❌":
+                break
+        except asyncio.TimeoutError:
+            break
+
+    new_balance = user_data['balance'] + total_payout
+    updates = {'balance': new_balance}
+    if total_payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + total_payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10 * (streak + 1))
+
+    embed = discord.Embed(
+        title="🎰 Slot Streak Result",
+        description=f"Final Streak: {streak}\nTotal {'Won' if total_payout > 0 else 'Lost'}: ${abs(total_payout)}",
+        color=0x2ecc71 if total_payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def treasurehunt(ctx, amount: int):
+    """Dig for treasure with a bet. Usage: !treasurehunt <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    treasures = {
+        "💎 Diamond": amount * 5,
+        "🥇 Gold": amount * 2,
+        "🥈 Silver": amount,
+        "💣 Trap": -amount * 2,
+        "🪨 Nothing": -amount
+    }
+    weights = [0.05, 0.15, 0.30, 0.20, 0.30]  # Probabilities
+    result = random.choices(list(treasures.keys()), weights=weights, k=1)[0]
+    payout = treasures[result]
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="⛏️ Treasure Hunt",
+        description=f"Bet: ${amount}\nFound: {result}\n{'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def war(ctx, amount: int):
+    """Play a card war against the bot. Usage: !war <amount>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+
+    deck = DECK.copy()
+    random.shuffle(deck)
+    player_card = deck.pop()
+    bot_card = deck.pop()
+    player_value = CARD_RANKS.index(player_card[:-1]) + 2  # 2-14 scale
+    bot_value = CARD_RANKS.index(bot_card[:-1]) + 2
+
+    if player_value > bot_value:
+        payout = amount
+        result = "win"
+    elif bot_value > player_value:
+        payout = -amount
+        result = "lose"
+    else:
+        payout = 0
+        result = "tie"
+
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="⚔️ Card War",
+        description=f"Your card: {player_card} ({player_value})\nBot's card: {bot_card} ({bot_value})\nResult: {result.title()} | {'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def jackpotguess(ctx, amount: int, guess: int):
+    """Guess a number to win a jackpot multiplier. Usage: !jackpotguess <amount> <1-50>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Balance: ${user_data['balance']}")
+        return
+    if not (1 <= guess <= 50):
+        await ctx.send("❌ Guess must be between 1 and 50!")
+        return
+
+    jackpot = random.randint(1, 50)
+    difference = abs(guess - jackpot)
+    if difference == 0:
+        multiplier = 10  # Perfect guess
+    elif difference <= 5:
+        multiplier = 3   # Close guess
+    elif difference <= 10:
+        multiplier = 1   # Near miss
+    else:
+        multiplier = 0   # Too far
+
+    payout = amount * multiplier - amount if multiplier > 0 else -amount
+    new_balance = user_data['balance'] + payout
+    updates = {'balance': new_balance}
+    if payout > 0:
+        updates['winnings'] = user_data.get('winnings', 0) + payout
+    update_user_data(user_id, updates)
+    add_xp(user_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎯 Jackpot Guess",
+        description=f"Bet: ${amount}\nYour guess: {guess}\nJackpot: {jackpot}\nMultiplier: {multiplier}x\n{'Won' if payout > 0 else 'Lost'}: ${abs(payout)}",
+        color=0x2ecc71 if payout > 0 else 0xe74c3c
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def roulettespinoff(ctx, opponent: discord.Member, amount: int):
+    """Challenge another player to a roulette spin-off. Usage: !roulettespinoff <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't challenge yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="🎡 Roulette Spin-Off Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} to a roulette spin-off for ${amount}!\n{opponent.mention}, accept with ✅ within 30 seconds!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    user_spin = random.randint(0, 36)
+    opponent_spin = random.randint(0, 36)
+    user_color = get_roulette_color(user_spin)
+    opponent_color = get_roulette_color(opponent_spin)
+
+    if user_spin > opponent_spin:
+        winner_id = user_id
+        payout = amount * 2
+        result = f"{ctx.author.mention} wins!"
+    elif opponent_spin > user_spin:
+        winner_id = opponent_id
+        payout = amount * 2
+        result = f"{opponent.mention} wins!"
+    else:
+        winner_id = None
+        payout = 0
+        result = "It's a tie!"
+
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🎡 Roulette Spin-Off Result",
+        description=f"{ctx.author.mention} spun: {user_spin} ({user_color})\n{opponent.mention} spun: {opponent_spin} ({opponent_color})\n{result}\n{'Won' if winner_id else 'Payout'}: ${payout}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    embed.add_field(name="Your New Balance", value=f"${get_user_data(user_id)['balance']}", inline=True)
+    embed.add_field(name="Opponent's New Balance", value=f"${get_user_data(opponent_id)['balance']}", inline=True)
+    await ctx.send(embed=embed)
+
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def emojibomb(ctx, opponent: discord.Member, amount: int):
+    """Place bombs to outsmart your opponent. Usage: !emojibomb <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't play against yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="💣 Emoji Bomb Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    board = [["⬜" for _ in range(3)] for _ in range(3)]
+    players = {user_id: "💣", opponent_id: "💥"}
+    turn = user_id
+
+    def display_board():
+        return "\n".join(" ".join(row) for row in board)
+
+    def check_boom():
+        for i in range(3):
+            if board[i].count("💣") == 3 or board[i].count("💥") == 3: return True
+            if [board[j][i] for j in range(3)].count("💣") == 3 or [board[j][i] for j in range(3)].count("💥") == 3: return True
+        if [board[i][i] for i in range(3)].count("💣") == 3 or [board[i][i] for i in range(3)].count("💥") == 3: return True
+        if [board[i][2-i] for i in range(3)].count("💣") == 3 or [board[i][2-i] for i in range(3)].count("💥") == 3: return True
+        return False
+
+    embed = discord.Embed(title="💣 Emoji Bomb", color=0x3498db)
+    while True:
+        embed.description = f"{display_board()}\n<@{turn}>'s turn ({players[turn]}). Place bomb (e.g., '1 1') within 30s!"
+        await msg.edit(embed=embed)
+
+        def check_msg(m):
+            return m.author.id == turn and m.channel == ctx.channel and len(m.content.split()) == 2 and all(x.isdigit() and 1 <= int(x) <= 3 for x in m.content.split())
+
+        try:
+            move = await bot.wait_for("message", timeout=30.0, check=check_msg)
+            x, y = [int(n) - 1 for n in move.content.split()]
+            await move.delete()
+            if board[x][y] == "⬜":
+                board[x][y] = players[turn]
+                if check_boom():
+                    winner_id = opponent_id if turn == user_id else user_id  # Opponent wins if current player triggers
+                    break
+                turn = opponent_id if turn == user_id else user_id
+            else:
+                await ctx.send(f"<@{turn}>, that spot is taken!", delete_after=5)
+        except asyncio.TimeoutError:
+            await ctx.send(f"<@{turn}> took too long! Forfeit!")
+            winner_id = opponent_id if turn == user_id else user_id
+            break
+        if all(cell != "⬜" for row in board for cell in row):
+            winner_id = None  # Tie
+            break
+
+    payout = amount * 2 if winner_id else 0
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="💣 Emoji Bomb Result",
+        description=f"{display_board()}\n{'<@' + str(winner_id) + '> wins $' + str(payout) if winner_id else 'Tie! No payout.'}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    await msg.edit(embed=embed)
+
+    
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def crystalclash(ctx, opponent: discord.Member, amount: int):
+    """Clash crystals with hidden powers. Usage: !crystalclash <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't clash with yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="💎 Crystal Clash Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    crystals = {"🔴": 3, "🟢": 5, "🔵": 7}  # Red: 3, Green: 5, Blue: 7
+    options = "Pick a crystal in DM: `red` (🔴), `green` (🟢), or `blue` (🔵)"
+
+    for player in [ctx.author, opponent]:
+        await player.send(embed=discord.Embed(title="💎 Crystal Clash", description=options, color=0x3498db))
+
+    def check_dm(m):
+        return m.channel.type == discord.ChannelType.private and m.content.lower() in ["red", "green", "blue"]
+
+    try:
+        user_task = bot.wait_for("message", timeout=30.0, check=lambda m: m.author == ctx.author and check_dm(m))
+        opp_task = bot.wait_for("message", timeout=30.0, check=lambda m: m.author == opponent and check_dm(m))
+        user_msg, opp_msg = await asyncio.gather(user_task, opp_task)
+        user_choice = {"red": "🔴", "green": "🟢", "blue": "🔵"}[user_msg.content.lower()]
+        opp_choice = {"red": "🔴", "green": "🟢", "blue": "🔵"}[opp_msg.content.lower()]
+    except asyncio.TimeoutError:
+        await ctx.send("❌ One or both players didn’t choose in time!")
+        return
+
+    user_power = crystals[user_choice] * (2 if random.random() < 0.1 else 1)  # 10% crit chance
+    opp_power = crystals[opp_choice] * (2 if random.random() < 0.1 else 1)
+
+    if user_power > opp_power:
+        winner_id = user_id
+        payout = amount * 2
+        result = f"{ctx.author.mention} wins!"
+    elif opp_power > user_power:
+        winner_id = opponent_id
+        payout = amount * 2
+        result = f"{opponent.mention} wins!"
+    else:
+        winner_id = None
+        payout = 0
+        result = "Tie!"
+
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="💎 Crystal Clash Result",
+        description=f"{ctx.author.mention}: {user_choice} ({user_power})\n{opponent.mention}: {opp_choice} ({opp_power})\n{result}\n{'Won' if winner_id else 'Payout'}: ${payout}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    await ctx.send(embed=embed)
+
+    
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def pirateplunder(ctx, opponent: discord.Member, amount: int):
+    """Plunder treasure until a trap is hit. Usage: !pirateplunder <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't plunder against yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="🏴‍☠️ Pirate Plunder Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    pile = [amount * i for i in [0.5, 1, 1.5, 2, 0]] * 2  # 10 items: loot + 2 traps (0)
+    random.shuffle(pile)
+    user_loot = 0
+    opp_loot = 0
+    turn = user_id
+
+    embed = discord.Embed(title="🏴‍☠️ Pirate Plunder", color=0x3498db)
+    while pile:
+        embed.description = f"Pile: {len(pile)} treasures left\n{ctx.author.mention}: ${user_loot}\n{opponent.mention}: ${opp_loot}\n<@{turn}> plunders with ✅ or passes with ❌ (30s)"
+        await msg.edit(embed=embed)
+        await msg.add_reaction("✅")
+        await msg.add_reaction("❌")
+
+        def check(reaction, user):
+            return user.id == turn and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+
+        try:
+            reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+            await msg.clear_reactions()
+            if str(reaction.emoji) == "✅":
+                loot = pile.pop()
+                if loot == 0:
+                    embed.description += f"\n<@{turn}> hit a trap! Game over!"
+                    break
+                if turn == user_id:
+                    user_loot += loot
+                else:
+                    opp_loot += loot
+            turn = opponent_id if turn == user_id else user_id
+        except asyncio.TimeoutError:
+            embed.description += f"\n<@{turn}> took too long! Game over!"
+            break
+
+    winner_id = user_id if user_loot > opp_loot else opponent_id if opp_loot > user_loot else None
+    payout = amount * 2 if winner_id else 0
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="🏴‍☠️ Pirate Plunder Result",
+        description=f"{ctx.author.mention}: ${user_loot}\n{opponent.mention}: ${opp_loot}\n{'<@' + str(winner_id) + '> wins $' + str(payout) if winner_id else 'Tie! No payout.'}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def spellduel(ctx, opponent: discord.Member, amount: int):
+    """Duel with magical spells. Usage: !spellduel <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't duel yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="✨ Spell Duel Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    spells = {"🔥": 3, "❄️": 2, "⚡": 4}  # Damage values
+    user_hp = 10
+    opp_hp = 10
+    turn = user_id
+
+    embed = discord.Embed(title="✨ Spell Duel", color=0x3498db)
+    while user_hp > 0 and opp_hp > 0:
+        embed.description = f"{ctx.author.mention}: {user_hp} HP\n{opponent.mention}: {opp_hp} HP\n<@{turn}>'s turn. Cast in DM: `fire` (🔥), `ice` (❄️), `lightning` (⚡) (30s)"
+        await msg.edit(embed=embed)
+        await bot.get_user(turn).send(embed=discord.Embed(title="✨ Cast Your Spell", description="Reply with `fire`, `ice`, or `lightning`", color=0x3498db))
+
+        def check_dm(m):
+            return m.channel.type == discord.ChannelType.private and m.author.id == turn and m.content.lower() in ["fire", "ice", "lightning"]
+
+        try:
+            spell_msg = await bot.wait_for("message", timeout=30.0, check=check_dm)
+            spell = {"fire": "🔥", "ice": "❄️", "lightning": "⚡"}[spell_msg.content.lower()]
+            damage = spells[spell] * (2 if random.random() < 0.1 else 1)  # 10% crit chance
+            if turn == user_id:
+                opp_hp -= damage
+                action = f"{ctx.author.mention} casts {spell} for {damage} damage!"
+            else:
+                user_hp -= damage
+                action = f"{opponent.mention} casts {spell} for {damage} damage!"
+            embed.description = f"{ctx.author.mention}: {user_hp} HP\n{opponent.mention}: {opp_hp} HP\n{action}"
+            turn = opponent_id if turn == user_id else user_id
+        except asyncio.TimeoutError:
+            await ctx.send(f"<@{turn}> took too long! Forfeit!")
+            winner_id = opponent_id if turn == user_id else user_id
+            break
+    else:
+        winner_id = user_id if opp_hp <= 0 else opponent_id if user_hp <= 0 else None
+
+    payout = amount * 2 if winner_id else 0
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="✨ Spell Duel Result",
+        description=f"{ctx.author.mention}: {user_hp} HP\n{opponent.mention}: {opp_hp} HP\n{'<@' + str(winner_id) + '> wins $' + str(payout) if winner_id else 'Tie! No payout.'}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def auctionfrenzy(ctx, opponent: discord.Member, amount: int):
+    """Bid on mystery items in an auction. Usage: !auctionfrenzy <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't auction against yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="📦 Auction Frenzy Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} for ${amount}!\n{opponent.mention}, accept with ✅ within 30s!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    items = [("💍 Ring", amount * 2), ("🖼️ Painting", amount * 1.5), ("🗿 Statue", amount), ("📜 Scroll", amount * 0.5)]
+    user_total = 0
+    opp_total = 0
+    turn = user_id
+
+    embed = discord.Embed(title="📦 Auction Frenzy", color=0x3498db)
+    for item, value in items:
+        user_bid = 0
+        opp_bid = 0
+        for player_id in [user_id, opponent_id]:
+            embed.description = f"Item: {item} (Value: ??)\n{ctx.author.mention}: ${user_total}\n{opponent.mention}: ${opp_total}\n<@{player_id}>, bid 0-{amount} in DM (30s)"
+            await msg.edit(embed=embed)
+            await bot.get_user(player_id).send(embed=discord.Embed(title="📦 Place Your Bid", description=f"Bid 0-{amount} for {item}", color=0x3498db))
+
+            def check_dm(m):
+                return m.channel.type == discord.ChannelType.private and m.author.id == player_id and m.content.isdigit() and 0 <= int(m.content) <= amount
+
+            try:
+                bid_msg = await bot.wait_for("message", timeout=30.0, check=check_dm)
+                bid = int(bid_msg.content)
+                if player_id == user_id:
+                    user_bid = bid
+                else:
+                    opp_bid = bid
+            except asyncio.TimeoutError:
+                pass
+
+        if user_bid > opp_bid:
+            user_total += value
+            result = f"{ctx.author.mention} wins {item}!"
+        elif opp_bid > user_bid:
+            opp_total += value
+            result = f"{opponent.mention} wins {item}!"
+        else:
+            result = f"Tie! {item} goes to no one."
+        embed.description = f"Item: {item}\n{ctx.author.mention} bid: ${user_bid}\n{opponent.mention} bid: ${opp_bid}\n{result}"
+        await msg.edit(embed=embed)
+        await asyncio.sleep(2)
+
+    winner_id = user_id if user_total > opp_total else opponent_id if opp_total > user_total else None
+    payout = amount * 2 if winner_id else 0
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    if winner_id:
+        update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="📦 Auction Frenzy Result",
+        description=f"{ctx.author.mention}: ${user_total}\n{opponent.mention}: ${opp_total}\n{'<@' + str(winner_id) + '> wins $' + str(payout) if winner_id else 'Tie! No payout.'}",
+        color=0x2ecc71 if winner_id else 0xe74c3c
+    )
+    await msg.edit(embed=embed)
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def timebomb(ctx, opponent: discord.Member, amount: int):
+    """Pass a ticking bomb until it explodes. Usage: !timebomb <@opponent> <amount>"""
+    user_id = ctx.author.id
+    opponent_id = opponent.id
+    user_data = get_user_data(user_id)
+    opponent_data = get_user_data(opponent_id)
+
+    if user_id == opponent_id:
+        await ctx.send("❌ You can't play against yourself!")
+        return
+    if not (MIN_BET <= amount <= MAX_BET and amount <= user_data['balance'] and amount <= opponent_data['balance']):
+        await ctx.send(f"❌ Bet must be ${MIN_BET}-${MAX_BET}. Your balance: ${user_data['balance']}, Opponent's: ${opponent_data['balance']}")
+        return
+
+    embed = discord.Embed(
+        title="⏰ Time Bomb Challenge",
+        description=f"{ctx.author.mention} challenges {opponent.mention} to a Time Bomb duel for ${amount}!\n{opponent.mention}, accept with ✅ within 30 seconds!",
+        color=0x3498db
+    )
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    def check_reaction(reaction, user):
+        return user == opponent and str(reaction.emoji) == "✅" and reaction.message.id == msg.id
+
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=check_reaction)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ Challenge timed out!")
+        return
+
+    timer = 25  # Starting timer reduced for faster games
+    turn = user_id
+    fuse_boost_used = False  # One-time random boost flag
+
+    embed = discord.Embed(title="⏰ Time Bomb", color=0x3498db)
+    while timer > 0:
+        embed.description = f"Timer: {timer}s\nHeld by: <@{turn}>\nSubtract 1-5 seconds (e.g., `3`) within 30s!"
+        await msg.edit(embed=embed)
+
+        def check_msg(m):
+            return m.author.id == turn and m.channel == ctx.channel and m.content.isdigit() and 1 <= int(m.content) <= min(5, timer)
+
+        try:
+            move = await bot.wait_for("message", timeout=30.0, check=check_msg)
+            subtract = int(move.content)
+            await move.delete()
+
+            # Random fuse boost: 20% chance to add 5-10s (once per game)
+            if not fuse_boost_used and random.random() < 0.2:
+                boost = random.randint(5, 10)
+                timer += boost
+                fuse_boost_used = True
+                embed.description = f"Timer: {timer}s\nFuse boost! +{boost}s added!\n<@{turn}> subtracted {subtract}s."
+            else:
+                embed.description = f"Timer: {timer}s\n<@{turn}> subtracted {subtract}s."
+
+            timer -= subtract
+            turn = opponent_id if turn == user_id else user_id
+            await msg.edit(embed=embed)
+            await asyncio.sleep(1)  # Brief pause for readability
+        except asyncio.TimeoutError:
+            embed.description = f"Timer: {timer}s\n<@{turn}> took too long! Bomb explodes!"
+            await msg.edit(embed=embed)
+            break
+
+    winner_id = opponent_id if turn == user_id else user_id  # Winner is the one not holding it
+    payout = amount * 2
+    update_user_data(user_id, {'balance': user_data['balance'] - amount + (payout if winner_id == user_id else 0)})
+    update_user_data(opponent_id, {'balance': opponent_data['balance'] - amount + (payout if winner_id == opponent_id else 0)})
+    update_user_data(winner_id, {'winnings': get_user_data(winner_id)['winnings'] + payout})
+    add_xp(user_id, amount // 10)
+    add_xp(opponent_id, amount // 10)
+
+    embed = discord.Embed(
+        title="⏰ Time Bomb Result",
+        description=f"Bomb exploded on <@{turn}> after reaching {timer}s!\n<@{winner_id}> wins ${payout}!",
+        color=0x2ecc71
+    )
+    embed.add_field(name="Your New Balance", value=f"${get_user_data(user_id)['balance']}", inline=True)
+    embed.add_field(name="Opponent's New Balance", value=f"${get_user_data(opponent_id)['balance']}", inline=True)
+    await msg.edit(embed=embed)
+
+
+# can add more  mini games  here line 2448
+
+
+@bot.command()
+async def lottery(ctx, tickets: int):
+    """Buy lottery tickets. Usage: !lottery <tickets>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    if tickets <= 0 or tickets * LOTTERY_TICKET_PRICE > user_data['balance']:
+        await ctx.send(f"❌ Invalid number of tickets! Cost: ${LOTTERY_TICKET_PRICE} per ticket. Balance: ${user_data['balance']}")
+        return
+
+    cost = tickets * LOTTERY_TICKET_PRICE
+    new_balance = user_data['balance'] - cost
+    update_user_data(user_id, {
+        'balance': new_balance,
+        'lottery_tickets': user_data['lottery_tickets'] + tickets
+    })
+    update_lottery_jackpot(cost // 2)
+
+    embed = discord.Embed(
+        title="🎰 Lottery",
+        description=f"Purchased {tickets} ticket(s) for ${cost}\nCurrent jackpot: ${get_lottery_jackpot()}\nYour tickets: {user_data['lottery_tickets'] + tickets}",
+        color=0x3498db
+    )
+    embed.add_field(name="New Balance", value=f"${new_balance}", inline=True)
+    await ctx.send(embed=embed)
+
+## Economy Commands
+
+@bot.command()
+async def shop(ctx):
+    """View available shop items. Usage: !shop"""
+    embed = discord.Embed(title="🛒 Paradox Shop", color=0x3498db)
+    for item_id, item in SHOP_ITEMS.items():
+        embed.add_field(
+            name=f"{item['name']} (${item['price']})",
+            value=item['description'],
+            inline=False
+        )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def buy(ctx, item_id: str):
+    """Buy an item from the shop. Usage: !buy <item_id>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    item = SHOP_ITEMS.get(item_id.lower())
+
+    if not item:
+        await ctx.send("❌ Item not found!")
+        return
+    if user_data['balance'] < item['price']:
+        await ctx.send(f"❌ Insufficient funds! Need ${item['price']}, have ${user_data['balance']}")
+        return
+
+    inventory = json.loads(user_data['inventory'])
+    inventory[item_id] = inventory.get(item_id, 0) + 1
+    update_user_data(user_id, {
+        'balance': user_data['balance'] - item['price'],
+        'inventory': json.dumps(inventory)
+    })
+    update_mission_progress(user_id, "weekly", "spent", item['price'])
+    embed = discord.Embed(
+        title="🛒 Purchase",
+        description=f"Purchased {item['name']} for ${item['price']}!",
+        color=0x2ecc71
+    )
+    embed.add_field(name="New Balance", value=f"${user_data['balance'] - item['price']}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def inventory(ctx):
+    """View your inventory. Usage: !inventory"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    inventory = json.loads(user_data['inventory'])
+    if not inventory:
+        await ctx.send("❌ Your inventory is empty!")
+        return
+    embed = discord.Embed(title="🎒 Inventory", color=0x3498db)
+    for item_id, qty in inventory.items():
+        item = SHOP_ITEMS.get(item_id, {"name": item_id})
+        embed.add_field(name=item['name'], value=f"Quantity: {qty}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def craft(ctx, recipe_id: str):
+    """Craft an item. Usage: !craft <recipe_id>"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    recipe_id = recipe_id.lower()
+
+    if recipe_id not in CRAFTING_RECIPES:
+        await ctx.send("❌ Invalid recipe! Available: " + ", ".join(CRAFTING_RECIPES.keys()))
+        return
+    if not can_craft(user_id, recipe_id):
+        recipe = CRAFTING_RECIPES[recipe_id]
+        reqs = ", ".join(f"{qty} {SHOP_ITEMS.get(item, {'name': item})['name']}" for item, qty in recipe['ingredients'].items())
+        await ctx.send(f"❌ You need: {reqs}")
+        return
+
+    craft_item(user_id, recipe_id)
+    embed = discord.Embed(
+        title="🔨 Crafting",
+        description=f"Crafted a {recipe_id.replace('_', ' ').title()}!",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def trade(ctx, member: discord.Member, offer: str, request: str):
+    """Offer a trade to another user. Usage: !trade <@user> <offer> <request>"""
+    user_id = ctx.author.id
+    receiver_id = member.id
+    user_data = get_user_data(user_id)
+    inventory = json.loads(user_data['inventory'])
+
+    offer_items = dict(item.split(':') for item in offer.split(','))
+    request_items = dict(item.split(':') for item in request.split(','))
+    for item, qty in offer_items.items():
+        qty = int(qty)
+        if inventory.get(item, 0) < qty:
+            await ctx.send(f"❌ You don't have enough {item}!")
+            return
+
+    conn = sqlite3.connect('casino.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO trade_offers (sender_id, receiver_id, offered_items, requested_items) VALUES (?, ?, ?, ?)',
+              (user_id, receiver_id, json.dumps(offer_items), json.dumps(request_items)))
+    offer_id = c.lastrowid
+    conn.commit()
+    conn.close()
+
+    embed = discord.Embed(
+        title="🤝 Trade Offer",
+        description=f"{ctx.author.mention} offers {offer} to {member.mention} for {request}\nAccept with `!accept {offer_id}` or decline with `!decline {offer_id}`",
+        color=0x3498db
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def accept(ctx, offer_id: int):
+    """Accept a trade offer. Usage: !accept <offer_id>"""
+    user_id = ctx.author.id
+    conn = sqlite3.connect('casino.db')
+    c = conn.cursor()
+    c.execute('SELECT * FROM trade_offers WHERE offer_id = ? AND receiver_id = ? AND status = "pending"', (offer_id, user_id))
+    trade = c.fetchone()
+    if not trade:
+        await ctx.send("❌ Invalid or expired trade offer!")
+        conn.close()
+        return
+
+    sender_id, _, offered_items, requested_items, _ = trade[1:]
+    offered_items = json.loads(offered_items)
+    requested_items = json.loads(requested_items)
+
+    sender_data = get_user_data(sender_id)
+    receiver_data = get_user_data(user_id)
+    sender_inventory = json.loads(sender_data['inventory'])
+    receiver_inventory = json.loads(receiver_data['inventory'])
+
+    if not all(sender_inventory.get(item, 0) >= int(qty) for item, qty in offered_items.items()) or \
+       not all(receiver_inventory.get(item, 0) >= int(qty) for item, qty in requested_items.items()):
+        await ctx.send("❌ One or both parties no longer have the required items!")
+        c.execute('UPDATE trade_offers SET status = "declined" WHERE offer_id = ?', (offer_id,))
+        conn.commit()
+        conn.close()
+        return
+
+    for item, qty in offered_items.items():
+        qty = int(qty)
+        sender_inventory[item] -= qty
+        receiver_inventory[item] = receiver_inventory.get(item, 0) + qty
+    for item, qty in requested_items.items():
+        qty = int(qty)
+        receiver_inventory[item] -= qty
+        sender_inventory[item] = sender_inventory.get(item, 0) + qty
+
+    update_user_data(sender_id, {'inventory': json.dumps(sender_inventory)})
+    update_user_data(user_id, {'inventory': json.dumps(receiver_inventory)})
+    c.execute('UPDATE trade_offers SET status = "accepted" WHERE offer_id = ?', (offer_id,))
+    conn.commit()
+    conn.close()
+
+    embed = discord.Embed(
+        title="🤝 Trade Accepted",
+        description=f"Trade {offer_id} between {ctx.author.mention} and <@{sender_id}> completed!",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def decline(ctx, offer_id: int):
+    """Decline a trade offer. Usage: !decline <offer_id>"""
+    user_id = ctx.author.id
+    conn = sqlite3.connect('casino.db')
+    c = conn.cursor()
+    c.execute('SELECT * FROM trade_offers WHERE offer_id = ? AND receiver_id = ? AND status = "pending"', (offer_id, user_id))
+    if not c.fetchone():
+        await ctx.send("❌ Invalid or expired trade offer!")
+    else:
+        c.execute('UPDATE trade_offers SET status = "declined" WHERE offer_id = ?', (offer_id,))
+        conn.commit()
+        embed = discord.Embed(
+            title="🤝 Trade Declined",
+            description=f"Trade {offer_id} declined by {ctx.author.mention}.",
+            color=0xe74c3c
+        )
+        await ctx.send(embed=embed)
+    conn.close()
+
+@bot.command()
+async def bank(ctx, action: str, amount: int = None):
+    """Manage your bank account. Usage: !bank <deposit|withdraw|balance> [amount]"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    bank_balance = user_data.get('bank_balance', 0)
+
+    if action == "deposit" and amount:
+        if amount <= 0 or amount > user_data['balance']:
+            await ctx.send("❌ Invalid deposit amount!")
+            return
+        update_user_data(user_id, {
+            'balance': user_data['balance'] - amount,
+            'bank_balance': bank_balance + amount
+        })
+        embed = discord.Embed(
+            title="🏦 Bank Deposit",
+            description=f"Deposited ${amount} into your bank.",
+            color=0x2ecc71
+        )
+        embed.add_field(name="Bank Balance", value=f"${bank_balance + amount}", inline=True)
+        embed.add_field(name="Cash Balance", value=f"${user_data['balance'] - amount}", inline=True)
+        await ctx.send(embed=embed)
+    elif action == "withdraw" and amount:
+        if amount <= 0 or amount > bank_balance:
+            await ctx.send("❌ Invalid withdraw amount!")
+            return
+        update_user_data(user_id, {
+            'balance': user_data['balance'] + amount,
+            'bank_balance': bank_balance - amount
+        })
+        embed = discord.Embed(
+            title="🏦 Bank Withdrawal",
+            description=f"Withdrew ${amount} from your bank.",
+            color=0x2ecc71
+        )
+        embed.add_field(name="Bank Balance", value=f"${bank_balance - amount}", inline=True)
+        embed.add_field(name="Cash Balance", value=f"${user_data['balance'] + amount}", inline=True)
+        await ctx.send(embed=embed)
+    elif action == "balance":
+        embed = discord.Embed(
+            title="🏦 Bank Balance",
+            description=f"Your bank balance: ${bank_balance}\nCash balance: ${user_data['balance']}",
+            color=0x3498db
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ Invalid action! Use 'deposit', 'withdraw', or 'balance'.")
+
+## Social Commands
+
+@bot.command()
+@commands.cooldown(1, 60, commands.BucketType.channel)
+async def tournament(ctx, game: str):
+    """Start a tournament. Usage: !tournament <game>"""
+    channel_id = ctx.channel.id
+    game = game.lower()
+    if game not in ["slots", "coinflip"]:
+        await ctx.send("❌ Only 'slots' and 'coinflip' tournaments supported!")
+        return
+    tournament_data = get_tournament_data(channel_id)
+    if tournament_data and tournament_data['active']:
+        await ctx.send("❌ A tournament is already active!")
+        return
+    update_tournament_data(channel_id, {
+        'game_type': game,
+        'players': json.dumps({}),
+        'scores': json.dumps({}),
+        'rounds': 3,
+        'current_round': 0,
+        'active': 1,
+        'prize_pool': 0
+    })
+    embed = discord.Embed(
+        title=f"🏆 {game.capitalize()} Tournament",
+        description="Join with `!join`. Starts in 60 seconds!",
+        color=0x3498db
+    )
+    await ctx.send(embed=embed)
+    await asyncio.sleep(60)
+    await run_tournament(ctx.channel)
+
+@bot.command()
+async def join(ctx):
+    """Join an active tournament. Usage: !join"""
+    channel_id = ctx.channel.id
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    tournament = get_tournament_data(channel_id)
+    if not tournament or not tournament['active'] or tournament['current_round'] > 0:
+        await ctx.send("❌ No active tournament or it has already started!")
+        return
+    if user_data['balance'] < TOURNAMENT_ENTRY_FEE:
+        await ctx.send(f"❌ Entry fee is ${TOURNAMENT_ENTRY_FEE}. Balance: ${user_data['balance']}")
+        return
+
+    players = json.loads(tournament['players'])
+    if str(user_id) in players:
+        await ctx.send("❌ You’ve already joined!")
+        return
+    players[str(user_id)] = 0
+    update_tournament_data(channel_id, {
+        'players': json.dumps(players),
+        'prize_pool': tournament['prize_pool'] + TOURNAMENT_ENTRY_FEE
+    })
+    update_user_data(user_id, {'balance': user_data['balance'] - TOURNAMENT_ENTRY_FEE})
+    embed = discord.Embed(
+        title="🏆 Tournament",
+        description=f"{ctx.author.mention} joined the {tournament['game_type']} tournament!\nPrize pool: ${tournament['prize_pool'] + TOURNAMENT_ENTRY_FEE}",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+async def run_tournament(channel):
+    """Run the tournament rounds and determine the winner."""
+    tournament = get_tournament_data(channel.id)
+    if not tournament or len(json.loads(tournament['players'])) < 2:
+        await channel.send("❌ Tournament cancelled: Not enough players!")
+        update_tournament_data(channel.id, {'active': 0})
+        return
+
+    game_type = tournament['game_type']
+    rounds = tournament['rounds']
+    for round_num in range(1, rounds + 1):
+        players = json.loads(tournament['players'])
+        scores = json.loads(tournament['scores'])
+        embed = discord.Embed(
+            title=f"🏆 {game_type.capitalize()} Tournament - Round {round_num}",
+            description="Results:",
+            color=0x3498db
+        )
+        for player_id in players:
+            if game_type == "slots":
+                slots = spin_slots(1)
+                winnings, _, _ = check_win(slots)
+                scores[player_id] = scores.get(player_id, 0) + winnings
+                embed.add_field(name=f"<@{player_id}>", value=f"{' '.join(slots[0])} (+${winnings})", inline=False)
+            elif game_type == "coinflip":
+                result = random.choice([True, False])
+                score = 100 if result else 0
+                scores[player_id] = scores.get(player_id, 0) + score
+                embed.add_field(name=f"<@{player_id}>", value=f"{'Heads' if result else 'Tails'} (+${score})", inline=False)
+        update_tournament_data(channel.id, {
+            'scores': json.dumps(scores),
+            'current_round': round_num
+        })
+        await channel.send(embed=embed)
+        await asyncio.sleep(5)
+
+    scores = json.loads(tournament['scores'])
+    winner_id = max(scores, key=scores.get)
+    prize = tournament['prize_pool']
+    winner_data = get_user_data(int(winner_id))
+    update_user_data(int(winner_id), {
+        'balance': winner_data['balance'] + prize,
+        'winnings': winner_data['winnings'] + prize
+    })
+    embed = discord.Embed(
+        title=f"🏆 {game_type.capitalize()} Tournament Ended",
+        description=f"Winner: <@{winner_id}> with {scores[winner_id]} points!\nPrize: ${prize}",
+        color=0x2ecc71
+    )
+    for player_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        embed.add_field(name=f"<@{player_id}>", value=f"Score: {score}", inline=False)
+    await channel.send(embed=embed)
+    update_tournament_data(channel.id, {'active': 0})
+
+## Utility Commands
+
+@bot.command()
+async def daily(ctx):
+    """Claim your daily reward. Usage: !daily"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    now = datetime.utcnow()
+    last_claim = user_data['daily_claim']
+
+    if not last_claim or (datetime.fromisoformat(last_claim) + timedelta(days=1)) <= now:
+        reward = DAILY_REWARD
+        streaks = json.loads(user_data['streaks'])
+        streaks['daily'] = streaks.get('daily', 0) + 1
+        if streaks['daily'] >= 7 and "daily_streak" not in json.loads(user_data['achievements']):
+            achievements = json.loads(user_data['achievements'])
+            achievements.append("daily_streak")
+            update_user_data(user_id, {'achievements': json.dumps(achievements)})
+        update_user_data(user_id, {
+            'balance': user_data['balance'] + reward,
+            'daily_claim': now.isoformat(),
+            'streaks': json.dumps(streaks)
+        })
+        embed = discord.Embed(
+            title="💰 Daily Reward",
+            description=f"Claimed ${reward}! Daily streak: {streaks['daily']}",
+            color=0x2ecc71
+        )
+        embed.add_field(name="New Balance", value=f"${user_data['balance'] + reward}", inline=True)
+        await ctx.send(embed=embed)
+    else:
+        time_left = (datetime.fromisoformat(last_claim) + timedelta(days=1)) - now
+        await ctx.send(f"⏳ Wait {time_left.seconds // 3600}h {(time_left.seconds % 3600) // 60}m")
+
+@bot.command()
+async def profile(ctx, member: discord.Member = None):
+    """View your or another user's profile. Usage: !profile [@user]"""
+    user_id = member.id if member else ctx.author.id
+    user_data = get_user_data(user_id)
+    user = member or ctx.author
+    embed = discord.Embed(
+        title=f"👤 {user.name}'s Profile",
+        description=f"Level: {user_data['level']}\nXP: {user_data['xp']}/{100 * user_data['level']}\nBalance: ${user_data['balance']}\nBank: ${user_data['bank_balance']}\nWinnings: ${user_data['winnings']}",
+        color=0x3498db
+    )
+    achievements = json.loads(user_data['achievements'])
+    if achievements:
+        embed.add_field(name="Achievements", value="\n".join(f"{ACHIEVEMENTS[a]['emoji']} {ACHIEVEMENTS[a]['name']}" for a in achievements), inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def balance(ctx, member: discord.Member = None):
+    """Check your or another user's balance. Usage: !balance [@user]"""
+    user_id = member.id if member else ctx.author.id
+    user_data = get_user_data(user_id)
+    user = member or ctx.author
+    embed = discord.Embed(
+        title=f"💰 {user.name}'s Balance",
+        description=f"Cash: ${user_data['balance']}\nBank: ${user_data['bank_balance']}",
+        color=0x3498db
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def top(ctx):
+    """View the top 10 players by balance. Usage: !top"""
+    conn = sqlite3.connect('casino.db')
+    c = conn.cursor()
+    c.execute('SELECT id, balance + bank_balance AS total FROM users ORDER BY total DESC LIMIT 10')
+    leaderboard = c.fetchall()
+    conn.close()
+
+    embed = discord.Embed(title="🏅 Leaderboard", color=0x3498db)
+    for i, (user_id, total) in enumerate(leaderboard, 1):
+        user = await bot.fetch_user(user_id)
+        embed.add_field(name=f"{i}. {user.name}", value=f"${total}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def achievements(ctx):
+    """View all possible achievements. Usage: !achievements"""
+    embed = discord.Embed(title="🏆 Achievements", color=0x3498db)
+    for ach_id, ach in ACHIEVEMENTS.items():
+        embed.add_field(name=f"{ach['emoji']} {ach['name']}", value=ach['description'], inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    """Transfer coins to another user. Usage: !give <@user> <amount>"""
+    user_id = ctx.author.id
+    receiver_id = member.id
+    user_data = get_user_data(user_id)
+    receiver_data = get_user_data(receiver_id)
+
+    if amount <= 0 or amount > user_data['balance']:
+        await ctx.send(f"❌ Invalid amount! Balance: ${user_data['balance']}")
+        return
+    if user_id == receiver_id:
+        await ctx.send("❌ You can't give coins to yourself!")
+        return
+
+    update_user_data(user_id, {'balance': user_data['balance'] - amount})
+    update_user_data(receiver_id, {'balance': receiver_data['balance'] + amount})
+    embed = discord.Embed(
+        title="💸 Coin Transfer",
+        description=f"{ctx.author.mention} gave ${amount} to {member.mention}!",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def missions(ctx):
+    """View your active missions. Usage: !missions"""
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+    missions = json.loads(user_data['missions']) or {}
+    embed = discord.Embed(title="📜 Missions", color=0x3498db)
+
+    for mission_type in MISSIONS:
+        if mission_type not in missions:
+            missions[mission_type] = {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS[mission_type]}
+        for mission in MISSIONS[mission_type]:
+            mission_id = mission["id"]
+            progress = missions[mission_type][mission_id]["progress"]
+            completed = missions[mission_type][mission_id]["completed"]
+            req = list(mission["requirements"].items())[0]
+            embed.add_field(
+                name=f"{mission['name']} ({mission_type.capitalize()})",
+                value=f"{mission['description']}\nProgress: {progress}/{req[1]} {'✅' if completed else ''}",
+                inline=False
+            )
+    update_user_data(user_id, {'missions': json.dumps(missions)})
+    await ctx.send(embed=embed)
+
+# --- Utility Commands ---
+
+@bot.command()
+async def paradox(ctx, action: str = None, channel: discord.TextChannel = None, *, message: str = None):
+    """Main command for Paradox Casino Machine. Usage: !paradox [action] [#channel] [message]"""
+    # Bot uptime
+    uptime = datetime.utcnow() - bot_start_time  # Assume bot_start_time is set globally at startup
+    uptime_str = f"{uptime.days}d {uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m"
+
+    # User data
+    user_id = ctx.author.id
+    user_data = get_user_data(user_id)
+
+    # Base embed
+    embed = discord.Embed(
+        title="🎰 Paradox Casino Machine",
+        description="Welcome to the ultimate casino experience!",
+        color=0x3498db
+    )
+    embed.set_footer(text=f"Uptime: {uptime_str} | Guilds: {len(bot.guilds)}")
+
+    if action is None:
+        # Default view: Overview
+        embed.add_field(
+            name="Your Stats",
+            value=f"Balance: ${user_data['balance']}\nXP: {user_data['xp']}\nWinnings: ${user_data['winnings']}",
+            inline=True
+        )
+        embed.add_field(
+            name="Solo Games",
+            value="`!bet` - Slots\n"
+                  "`!slotstreak <amount>` - Streak slots\n"
+                  "`!treasurehunt <amount>` - Dig for treasure\n"
+                  "`!war <amount>` - Card war vs bot\n"
+                  "`!jackpotguess <amount> <1-50>` - Guess the jackpot",
+            inline=True
+        )
+        embed.add_field(
+            name="PvP Games",
+            value="`!diceduel <@opponent> <amount>` - Dice duel\n"
+                  "`!roulettespinoff <@opponent> <amount>` - Roulette duel\n"
+                  "`!emojibomb <@opponent> <amount>` - Place bombs\n"
+                  "`!crystalclash <@opponent> <amount>` - Clash crystals\n"
+                  "`!pirateplunder <@opponent> <amount>` - Plunder treasure\n"
+                  "`!spellduel <@opponent> <amount>` - Spell duel\n"
+                  "`!auctionfrenzy <@opponent> <amount>` - Bid on items\n"
+                  "`!timebomb <@opponent> <amount>` - Pass a bomb",
+            inline=True
+        )
+        embed.add_field(
+            name="Commands",
+            value="`!paradox settings [#channel] [message]` - Set shop reset announcement (admin)\n"
+                  "`!help` - Full command list",
+            inline=False
+        )
+    elif action.lower() == "settings":
+        # Announcement settings (admin only)
+        if not ctx.author.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Only administrators can configure announcement settings.",
+                color=0xe74c3c
+            )
+        else:
+            channel = channel or ctx.channel  # Default to current channel
+            set_announcement_settings(ctx.guild.id, channel.id, message)
+            embed = discord.Embed(
+                title="📢 Shop Reset Announcement Settings Updated",
+                description=f"Daily shop reset announcements will be sent to {channel.mention}.\n" +
+                            (f"Custom message set: '{message}'" if message else "Using default: 'Daily shop is reset thx for gambling with us Regards Time_Walker.inc'"),
+                color=0x2ecc71
+            )
+    else:
+        embed = discord.Embed(
+            title="❌ Invalid Action",
+            description="Use `!paradox` for overview or `!paradox settings [#channel] [message]` to configure announcements.",
+            color=0xe74c3c
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setannouncement(ctx, channel: discord.TextChannel = None, *, message: str = None):
+    """Set the daily shop reset announcement channel and optional message. Usage: !setannouncement [#channel] [message]"""
+    channel = channel or ctx.channel  # Default to current channel
+    set_announcement_settings(ctx.guild.id, channel.id, message)
+    embed = discord.Embed(
+        title="📢 Shop Reset Announcement Settings Updated",
+        description=f"Daily shop reset announcements will be sent to {channel.mention}.\n" +
+                    (f"Custom message set: '{message}'" if message else "Using default: 'Daily shop is reset thx for gambling with us Regards Time_Walker.inc'"),
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def help(ctx):
+    """Display the help menu."""
+    embed = discord.Embed(title="🎰 Paradox Casino Help", description="Welcome to the Paradox Casino Machine!", color=0x3498db)
+    embed.add_field(
+        name="Utility",
+        value="`!paradox` - Casino overview and settings\n"
+              "`!setannouncement [#channel] [message]` - Set daily shop reset channel/message (admin)",
+        inline=False
+    )
+    embed.add_field(
+        name="Solo Games",
+        value="`!bet` - Slots\n"
+              "`!slotstreak <amount>` - Streak slots\n"
+              "`!treasurehunt <amount>` - Dig for treasure\n"
+              "`!war <amount>` - Card war vs bot\n"
+              "`!jackpotguess <amount> <1-50>` - Guess the jackpot",
+        inline=True
+    )
+    embed.add_field(
+        name="PvP Games",
+        value="`!diceduel <@opponent> <amount>` - Dice duel\n"
+              "`!roulettespinoff <@opponent> <amount>` - Roulette duel\n"
+              "`!emojibomb <@opponent> <amount>` - Place bombs\n"
+              "`!crystalclash <@opponent> <amount>` - Clash crystals\n"
+              "`!pirateplunder <@opponent> <amount>` - Plunder treasure\n"
+              "`!spellduel <@opponent> <amount>` - Spell duel\n"
+              "`!auctionfrenzy <@opponent> <amount>` - Bid on items\n"
+              "`!timebomb <@opponent> <amount>` - Pass a bomb",
+        inline=True
+    )
+    embed.set_footer(text="Paradox Casino Machine | Powered by Luck")
+    await ctx.send(embed=embed)
+
+uptime = datetime.utcnow() - bot_start_time
+uptime_str = f"{uptime.days}d {uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m"    
+
+# --- Background Tasks ---
 
 async def casino_announcements():
-    """Send periodic announcements."""
+    """Send periodic casino announcements."""
     await bot.wait_until_ready()
     announcements = [
-        {"title": "🎰 Slot Frenzy!", "description": f"Spin `!bet` for {JACKPOT_SYMBOL}!"},
-        {"title": "💰 Daily Rewards", "description": "Claim `!daily`!"},
-        {"title": "🎡 Roulette", "description": "Bet with `!roulette`!"},
-        {"title": "🃏 Poker", "description": "Play `!poker`!"},
-        {"title": "♠ Blackjack", "description": "Beat dealer with `!blackjack`!"},
-        {"title": "🎲 Craps", "description": "Roll `!craps`!"},
-        {"title": "🎴 Baccarat", "description": "Play `!baccarat`!"}
+        {"title": "🎰 Slot Frenzy!", "description": f"Spin `!bet` for a chance at the {JACKPOT_SYMBOL} jackpot!"},
+        {"title": "🏆 Tournament Time!", "description": "Start a tournament with `!tournament slots` or `!tournament coinflip`!"},
+        {"title": "🎱 Bingo Bash!", "description": "Play `!bingo` for big wins!"},
+        {"title": "🎟️ Lottery Draw!", "description": f"Buy tickets with `!lottery`! Current jackpot: ${get_lottery_jackpot()}"}
     ]
     index = 0
     while not bot.is_closed():
         for guild in bot.guilds:
             channel = guild.system_channel or discord.utils.get(guild.text_channels, name='general')
-            if channel:
+            if channel and channel.permissions_for(guild.me).send_messages:
                 embed = discord.Embed(**announcements[index], color=0xf1c40f)
-                embed.set_footer(text="Paradox Casino")
+                embed.set_footer(text="Paradox Casino Machine | Powered by Luck")
                 try:
                     await channel.send(embed=embed)
                 except Exception as e:
-                    logger.error(f"Announcement failed in {guild.name}: {e}")
+                    logger.error(f"Failed to send announcement to {guild.name}: {e}")
         index = (index + 1) % len(announcements)
-        await asyncio.sleep(3600 * 12)
+        await asyncio.sleep(3600 * 6)  # Every 6 hours
+
+async def daily_shop_reset():
+    """Announce daily shop reset at midnight UTC."""
+    await bot.wait_until_ready()
+    default_message = "Daily shop is reset thx for gambling with us Regards Time_Walker.inc"
+    while not bot.is_closed():
+        now = datetime.utcnow()
+        next_reset = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+        await asyncio.sleep((next_reset - now).total_seconds())  # Sleep until midnight UTC
+        for guild in bot.guilds:
+            settings = get_announcement_settings(guild.id)
+            channel = (bot.get_channel(settings['channel_id']) if settings and settings['channel_id'] else
+                       guild.system_channel or discord.utils.get(guild.text_channels, name='general'))
+            if channel and channel.permissions_for(guild.me).send_messages:
+                message = settings['message'] if settings and settings['message'] else default_message
+                embed = discord.Embed(
+                    title="🛒 Daily Shop Reset",
+                    description=message,
+                    color=0xf1c40f
+                )
+                embed.set_footer(text="Paradox Casino Machine | Powered by Luck")
+                try:
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    logger.error(f"Failed to send shop reset announcement to {guild.name}: {e}")
 
 async def lottery_draw_task():
     """Handle daily lottery draws."""
-    while True:
-        await asyncio.sleep(86400)
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(86400)  # Daily draw
         conn = sqlite3.connect('casino.db')
         c = conn.cursor()
         c.execute('SELECT id, lottery_tickets FROM users WHERE lottery_tickets > 0')
@@ -891,760 +3264,64 @@ async def lottery_draw_task():
             update_user_data(winner_id, {
                 'balance': user_data['balance'] + jackpot,
                 'lottery_tickets': 0,
-                'achievements': json.dumps(json.loads(user_data['achievements']) + ["lottery_winner"])
+                'winnings': user_data['winnings'] + jackpot
             })
             c.execute('UPDATE users SET lottery_tickets = 0')
             c.execute('UPDATE lottery SET jackpot = 1000 WHERE rowid = 1')
             conn.commit()
             for guild in bot.guilds:
-                if guild.system_channel:
-                    await guild.system_channel.send(f"<@{winner_id}> won ${jackpot} in the lottery!")
+                channel = guild.system_channel
+                if channel and channel.permissions_for(guild.me).send_messages:
+                    embed = discord.Embed(
+                        title="🎉 Lottery Winner!",
+                        description=f"<@{winner_id}> has won the jackpot of ${jackpot}!",
+                        color=0x2ecc71
+                    )
+                    await channel.send(embed=embed)
         conn.close()
 
-async def save_data_periodically():
-    """Periodic data save checkpoint."""
-    while True:
-        await asyncio.sleep(300)
-        logger.info("Data saved.")
-
-async def daily_announcement_task():
-    """Send daily announcements to configured channels."""
-    while True:
-        now = datetime.utcnow()
-        next_announcement = (now + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
-        await asyncio.sleep((next_announcement - now).total_seconds())
+async def bank_interest_task():
+    """Apply daily interest to bank balances."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(86400)  # Daily
         conn = sqlite3.connect('casino.db')
         c = conn.cursor()
-        c.execute('SELECT guild_id, channel_id, message FROM announcement_settings')
-        settings = c.fetchall()
-        for guild_id, channel_id, message in settings:
-            guild = bot.get_guild(guild_id)
-            if guild:
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    try:
-                        await channel.send(message)
-                    except Exception as e:
-                        logger.error(f"Daily announcement failed in {guild.name}: {e}")
+        c.execute('SELECT id, bank_balance FROM users WHERE bank_balance > 0')
+        users = c.fetchall()
+        for user_id, bank_balance in users:
+            interest = int(bank_balance * BANK_INTEREST_RATE)
+            c.execute('UPDATE users SET bank_balance = bank_balance + ? WHERE id = ?', (interest, user_id))
+        conn.commit()
         conn.close()
+        logger.info("Bank interest applied to all users.")
 
-# --- Core Commands ---
-@bot.command()
-@commands.cooldown(1, 3, commands.BucketType.user)
-async def bet(ctx, amount: int, lines: int = 1):
-    """Spin the slot machine."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    total_bet = amount * lines
-    if amount < MIN_BET or amount > MAX_BET or lines < 1 or lines > MAX_LINES or total_bet > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}-${MAX_BET}, lines 1-{MAX_LINES}, funds: ${user_data['balance']}")
-        return
-    update_lottery_jackpot(int(total_bet * 0.05))
-    slots = spin_slots(lines)
-    winnings, jackpot_win, winning_lines = check_win(slots)
-    if jackpot_win:
-        jackpot_amount = get_lottery_jackpot()
-        winnings += jackpot_amount
-        update_lottery_jackpot(-jackpot_amount + 1000)
-    user_data['balance'] -= total_bet
-    user_data['balance'] += winnings
-    user_data['winnings'] += winnings
-    streaks = json.loads(user_data['streaks'])
-    if winnings > 0:
-        streaks['wins'] = streaks.get('wins', 0) + 1
-        streaks['losses'] = 0
-    else:
-        streaks['losses'] = streaks.get('losses', 0) + 1
-        streaks['wins'] = 0
-    earned_achievements = check_achievements(user_id, amount, winnings, jackpot_win, user_data['balance'], streaks, "slots")
-    update_user_data(user_id, {
-        'balance': user_data['balance'],
-        'winnings': user_data['winnings'],
-        'streaks': json.dumps(streaks)
-    })
-    embed = discord.Embed(
-        title="🎰 Winner!" if winnings > 0 else "🎰 No Luck!",
-        description=f"{random.choice(WIN_MESSAGES if winnings > 0 else LOSS_MESSAGES)}\nBet ${total_bet}, {'won' if winnings > 0 else 'lost'} ${winnings if winnings > 0 else total_bet}",
-        color=0xf1c40f if winnings > 0 else 0x95a5a6
-    )
-    embed.add_field(name="Your Spin", value=f"```\n{format_slot_display(slots, winning_lines)}\n```", inline=False)
-    embed.add_field(name="Balance", value=f"${user_data['balance']}", inline=True)
-    if earned_achievements:
-        embed.add_field(name="🏆 Achievements", value="\n".join(f"{ACHIEVEMENTS[a]['emoji']} **{ACHIEVEMENTS[a]['name']}**" for a in earned_achievements), inline=False)
-    await ctx.send(embed=embed)
-    levels_gained = add_xp(user_id, 10)
-    if levels_gained:
-        await ctx.send(f"🎉 {ctx.author.mention} leveled up to {get_user_data(user_id)['level']}! +${500 * levels_gained}")
-
-@bot.command()
-async def daily(ctx):
-    """Claim daily reward."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    now = datetime.utcnow().isoformat()
-    last_claim = user_data['daily_claim']
-    if not last_claim or (datetime.fromisoformat(last_claim) + timedelta(days=1)) <= datetime.fromisoformat(now):
-        base_reward = DAILY_REWARD * (1.5 if user_data['level'] >= 5 else 1)
-        streaks = json.loads(user_data['streaks'])
-        daily_streak = streaks.get('daily', 0)
-        if last_claim and (datetime.fromisoformat(last_claim) + timedelta(days=2)) > datetime.fromisoformat(now):
-            daily_streak += 1
-        else:
-            daily_streak = 1
-        streak_bonus = min(daily_streak * 50, DAILY_REWARD) if daily_streak < 7 else DAILY_REWARD
-        total_reward = int(base_reward + streak_bonus)
-        user_data['balance'] += total_reward
-        streaks['daily'] = daily_streak
-        earned_achievements = check_achievements(user_id, 0, total_reward, False, user_data['balance'], streaks)
-        update_user_data(user_id, {
-            'balance': user_data['balance'],
-            'daily_claim': now,
-            'streaks': json.dumps(streaks)
-        })
-        embed = discord.Embed(title="💸 Daily Reward!", description=f"${total_reward} claimed!", color=0x2ecc71)
-        if streak_bonus:
-            embed.add_field(name=f"🔥 {daily_streak}-Day Streak", value=f"+${streak_bonus}", inline=False)
-        embed.add_field(name="Balance", value=f"${user_data['balance']}", inline=True)
-        if earned_achievements:
-            embed.add_field(name="🏆 Achievements", value="\n".join(f"{ACHIEVEMENTS[a]['emoji']} **{ACHIEVEMENTS[a]['name']}**" for a in earned_achievements), inline=False)
-        await ctx.send(embed=embed)
-    else:
-        time_left = (datetime.fromisoformat(last_claim) + timedelta(days=1)) - datetime.fromisoformat(now)
-        await ctx.send(f"⏳ Wait {time_left.seconds // 3600}h {(time_left.seconds % 3600) // 60}m")
-
-@bot.command()
-async def setdailyannouncement(ctx, channel: discord.TextChannel, *, message: str):
-    """Set a daily announcement message for a specific channel."""
-    guild_id = ctx.guild.id
-    channel_id = channel.id
-
-    # Save the announcement settings to the database
-    conn = sqlite3.connect('casino.db')
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO announcement_settings (guild_id, channel_id, message) VALUES (?, ?, ?)',
-              (guild_id, channel_id, message))
-    conn.commit()
-    conn.close()
-
-    await ctx.send(f"✅ Daily announcement set for {channel.mention}: {message}")
-
-@bot.command()
-async def setannouncement(ctx, channel: discord.TextChannel, *, message: str):
-    """Send an immediate announcement to a specific channel."""
-    await channel.send(message)
-    await ctx.send(f"✅ Announcement sent to {channel.mention}")
+async def mission_reset_task():
+    """Reset daily missions."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(86400)  # Daily
+        conn = sqlite3.connect('casino.db')
+        c = conn.cursor()
+        c.execute('SELECT id, missions FROM users')
+        users = c.fetchall()
+        for user_id, missions_json in users:
+            missions = json.loads(missions_json) or {}
+            missions['daily'] = {m["id"]: {"progress": 0, "completed": False} for m in MISSIONS['daily']}
+            c.execute('UPDATE users SET missions = ? WHERE id = ?', (json.dumps(missions), user_id))
+        conn.commit()
+        conn.close()
+        logger.info("Daily missions reset for all users.")
 
 
+# --- Bot Startup ---
 
-@bot.command()
-async def profile(ctx, member: discord.Member = None):
-    """Display user profile."""
-    user = member or ctx.author
-    user_data = get_user_data(user.id)
-    embed = discord.Embed(
-        title=f"👤 {user.name}'s Profile",
-        description=f"Level: {user_data['level']}\nXP: {user_data['xp']}/{100 * user_data['level']}\nBalance: ${user_data['balance']}",
-        color=0x3498db
-    )
-    achievements = json.loads(user_data['achievements'])
-    if achievements:
-        embed.add_field(name="Achievements", value="\n".join(f"{ACHIEVEMENTS[a]['emoji']} {ACHIEVEMENTS[a]['name']}" for a in achievements), inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def jackpot(ctx):
-    """Display current jackpot."""
-    jackpot_amount = get_lottery_jackpot()
-    embed = discord.Embed(title="🎰 Jackpot", description=f"${jackpot_amount}", color=0xf1c40f)
-    await ctx.send(embed=embed)
-
-# --- Game Commands ---
-@bot.command()
-async def tictactoe(ctx, opponent: discord.Member = None):
-    """Start Tic-Tac-Toe."""
-    if game.game_active:
-        await ctx.send("❌ Game in progress!")
-        return
-    game.game_active = True
-    game.players = {ctx.author.id: "X"}
-    if opponent:
-        if opponent == ctx.author:
-            await ctx.send("❌ Can't play yourself!")
-            return
-        game.players[opponent.id] = "O"
-        await ctx.send(f"🎮 Tic-Tac-Toe: {ctx.author.mention} (X) vs {opponent.mention} (O)! Use !move [row] [col].")
-    else:
-        game.players[bot.user.id] = "O"
-        await ctx.send(f"🎮 Tic-Tac-Toe: {ctx.author.mention} (X) vs Bot (O). Use !move [row] [col].")
-    await ctx.send(game.display_board())
-
-@bot.command()
-async def move(ctx, row: int, col: int):
-    """Make a Tic-Tac-Toe move."""
-    if not game.game_active:
-        await ctx.send("❌ No game! Start with !tictactoe.")
-        return
-    if ctx.author.id not in game.players:
-        await ctx.send("❌ Not in this game!")
-        return
-    if game.current_player != game.players.get(ctx.author.id):
-        await ctx.send("❌ Not your turn!")
-        return
-    if row not in [0, 1, 2] or col not in [0, 1, 2]:
-        await ctx.send("❌ Invalid move! 0-2 only.")
-        return
-    if game.make_move(row, col, game.current_player):
-        winner = game.check_win()
-        if winner:
-            update_user_data(ctx.author.id, {'balance': get_user_data(ctx.author.id)['balance'] + 100})
-            await ctx.send(f"{game.display_board()}\n{ctx.author.mention} wins! +$100")
-            game.game_active = False
-        elif game.is_full():
-            await ctx.send(f"{game.display_board()}\nTie!")
-            game.game_active = False
-        else:
-            game.current_player = "O" if game.current_player == "X" else "X"
-            next_player = next(k for k, v in game.players.items() if v == game.current_player)
-            await ctx.send(f"{game.display_board()}\n<@{next_player}>'s turn!")
-            if next_player == bot.user.id:
-                await asyncio.sleep(1)
-                while True:
-                    bot_row, bot_col = random.randint(0, 2), random.randint(0, 2)
-                    if game.make_move(bot_row, bot_col, "O"):
-                        winner = game.check_win()
-                        await ctx.send(f"{game.display_board()}\nBot moved to ({bot_row}, {bot_col})!")
-                        if winner:
-                            await ctx.send("🤖 Bot wins!")
-                            game.game_active = False
-                        elif game.is_full():
-                            await ctx.send("🤝 Tie!")
-                            game.game_active = False
-                        break
-
-@bot.command()
-async def hangman(ctx):
-    """Start Hangman."""
-    if hangman_game.active:
-        await ctx.send("❌ Hangman in progress!")
-        return
-    hangman_game.active = True
-    hangman_game.__init__()
-    await ctx.send(f"{HANGMAN_STAGES[0]}\nWord: {hangman_game.display_word()}\nGuess with `!guess letter`")
-
-@bot.command()
-async def guess(ctx, letter: str):
-    """Guess in Hangman."""
-    if not hangman_game.active:
-        await ctx.send("❌ No Hangman game!")
-        return
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    result = hangman_game.guess(letter)
-    if result == "already guessed":
-        await ctx.send("❌ Already guessed!")
-    elif result == "wrong":
-        await ctx.send(f"{HANGMAN_STAGES[hangman_game.wrong_guesses]}\nWord: {hangman_game.display_word()}")
-        if hangman_game.wrong_guesses == 6:
-            await ctx.send(f"Game Over! Word was {hangman_game.word}")
-            hangman_game.active = False
-    elif result == "correct":
-        update_user_data(user_id, {
-            'balance': user_data['balance'] + 50,
-            'hangman_wins': user_data['hangman_wins'] + 1
-        })
-        await ctx.send(f"{HANGMAN_STAGES[hangman_game.wrong_guesses]}\nWord: {hangman_game.display_word()}\nWin! +$50")
-        hangman_game.active = False
-    else:
-        await ctx.send(f"{HANGMAN_STAGES[hangman_game.wrong_guesses]}\nWord: {hangman_game.display_word()}")
-
-@bot.command()
-async def guessnumber(ctx):
-    """Start number guessing."""
-    if number_guess_game.active:
-        await ctx.send("❌ Game in progress!")
-        return
-    number_guess_game.active = True
-    number_guess_game.__init__()
-    await ctx.send(f"Guess 1-100! {number_guess_game.guesses_left} guesses left. Use `!number guess`")
-
-@bot.command()
-async def number(ctx, guess: int):
-    """Guess in number game."""
-    if not number_guess_game.active:
-        await ctx.send("❌ No game!")
-        return
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    result = number_guess_game.guess(guess)
-    if result == "correct":
-        update_user_data(user_id, {
-            'balance': user_data['balance'] + 50,
-            'number_guesses': number_guess_game.guesses_made
-        })
-        await ctx.send(f"Correct! {number_guess_game.number} in {number_guess_game.guesses_made} guesses! +$50")
-        number_guess_game.active = False
-    elif number_guess_game.guesses_left == 0:
-        await ctx.send(f"Out of guesses! Was {number_guess_game.number}.")
-        number_guess_game.active = False
-    else:
-        await ctx.send(f"Too {'high' if result == 'lower' else 'low'}! {number_guess_game.guesses_left} left.")
-
-@bot.command()
-async def trivia(ctx):
-    """Answer trivia."""
-    question = random.choice(TRIVIA_QUESTIONS)
-    embed = discord.Embed(title="❓ Trivia", description=question["question"], color=0x3498db)
-    for i, opt in enumerate(question["options"], 1):
-        embed.add_field(name=f"{i}. {opt}", value="\u200b", inline=False)
-    await ctx.send(embed=embed)
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.isdigit() and 1 <= int(m.content) <= 4
-    try:
-        response = await bot.wait_for('message', check=check, timeout=30.0)
-        user_id = ctx.author.id
-        user_data = get_user_data(user_id)
-        if int(response.content) - 1 == question["correct"]:
-            update_user_data(user_id, {
-                'balance': user_data['balance'] + 100,
-                'trivia_correct': user_data['trivia_correct'] + 1
-            })
-            await ctx.send("Correct! +$100")
-        else:
-            await ctx.send(f"Wrong! Answer was {question['options'][question['correct']]}.")
-    except asyncio.TimeoutError:
-        await ctx.send("Time’s up!")
-
-@bot.command()
-async def rps(ctx, amount: int):
-    """Play RPS."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount < MIN_BET or amount > MAX_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}-${MAX_BET}, funds: ${user_data['balance']}")
-        return
-    await ctx.send("Choose: rock, paper, or scissors")
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in RPS_CHOICES
-    try:
-        response = await bot.wait_for('message', check=check, timeout=30.0)
-        player_choice = response.content.lower()
-        bot_choice = random.choice(RPS_CHOICES)
-        outcome = rps_outcome(player_choice, bot_choice)
-        streaks = json.loads(user_data['streaks'])
-        if outcome == "win":
-            streaks['rps_wins'] = streaks.get('rps_wins', 0) + 1
-            update_user_data(user_id, {
-                'balance': user_data['balance'] + amount,
-                'rps_wins': user_data['rps_wins'] + 1,
-                'streaks': json.dumps(streaks)
-            })
-            await ctx.send(f"You chose {player_choice}, bot chose {bot_choice}. Win! +${amount}")
-        elif outcome == "lose":
-            streaks['rps_wins'] = 0
-            update_user_data(user_id, {
-                'balance': user_data['balance'] - amount,
-                'streaks': json.dumps(streaks)
-            })
-            await ctx.send(f"You chose {player_choice}, bot chose {bot_choice}. Lose! -${amount}")
-        else:
-            await ctx.send(f"You chose {player_choice}, bot chose {bot_choice}. Tie!")
-    except asyncio.TimeoutError:
-        await ctx.send("Time’s up!")
-
-@bot.command()
-async def blackjack(ctx, amount: int):
-    """Play Blackjack."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount < MIN_BET or amount > MAX_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}-${MAX_BET}, funds: ${user_data['balance']}")
-        return
-    update_user_data(user_id, {'balance': user_data['balance'] - amount})
-    player_hand = deal_blackjack_hand()
-    dealer_hand = deal_blackjack_hand()
-    player_score = calculate_blackjack_score(player_hand)
-    dealer_score = calculate_blackjack_score(dealer_hand)
-    while dealer_score < 17:
-        dealer_hand.append(random.choice(BLACKJACK_CARDS))
-        dealer_score = calculate_blackjack_score(dealer_hand)
-    win = (player_score <= 21 and (player_score > dealer_score or dealer_score > 21))
-    payout = amount * 2 if win else 0
-    new_balance = user_data['balance'] - amount + payout
-    embed = discord.Embed(
-        title="♠ Blackjack",
-        description=f"Your Hand: {' '.join(player_hand)} ({player_score})\nDealer: {' '.join(dealer_hand)} ({dealer_score})",
-        color=0x2ecc71 if win else 0xe74c3c
-    )
-    embed.add_field(name="Result", value=f"{'Win' if win else 'Lose'}! Payout: ${payout}", inline=False)
-    embed.add_field(name="Balance", value=f"${new_balance}", inline=True)
-    await ctx.send(embed=embed)
-    update_user_data(user_id, {'balance': new_balance})
-    if win:
-        check_achievements(user_id, amount, payout, False, new_balance, user_data['streaks'], "blackjack")
-
-@bot.command()
-async def wheel(ctx, amount: int):
-    """Spin Wheel of Fortune."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount < MIN_BET or amount > MAX_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}-${MAX_BET}, funds: ${user_data['balance']}")
-        return
-    prize = random.choice(WHEEL_PRIZES)
-    winnings = get_lottery_jackpot() if prize == "Jackpot" else prize
-    if prize == "Jackpot":
-        update_lottery_jackpot(-winnings + 1000)
-    update_user_data(user_id, {'balance': user_data['balance'] - amount + winnings})
-    await ctx.send(f"Spun wheel and won {prize if prize != 'Jackpot' else f'${winnings} Jackpot'}! Balance: ${user_data['balance'] - amount + winnings}")
-
-@bot.command()
-async def coinflip(ctx, amount: int, choice: str):
-    """Flip a coin."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount <= 0 or amount > user_data['balance'] or choice.lower() not in ["heads", "tails"]:
-        await ctx.send("❌ Invalid amount or choice!")
-        return
-    result = random.choice(["heads", "tails"])
-    win = choice.lower() == result
-    payout = amount if win else -amount
-    streaks = json.loads(user_data['streaks'])
-    streaks['coinflip_wins'] = streaks.get('coinflip_wins', 0) + 1 if win else 0
-    update_user_data(user_id, {
-        'balance': user_data['balance'] + payout,
-        'coinflip_wins': user_data['coinflip_wins'] + 1 if win else user_data['coinflip_wins'],
-        'streaks': json.dumps(streaks)
-    })
-    embed = discord.Embed(
-        title="🪙 Coin Flip",
-        description=f"Flipped {result}. {'Won' if win else 'Lost'} ${abs(payout)}!",
-        color=0x2ecc71 if win else 0xe74c3c
-    )
-    embed.add_field(name="Balance", value=f"${user_data['balance'] + payout}", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def dice(ctx, amount: int, prediction: str):
-    """Roll dice."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount <= 0 or amount > user_data['balance'] or prediction.lower() not in ["over 7", "under 7", "exactly 7"]:
-        await ctx.send("❌ Invalid amount or prediction!")
-        return
-    dice1, dice2 = random.randint(1, 6), random.randint(1, 6)
-    total = dice1 + dice2
-    win = (prediction.lower() == "over 7" and total > 7) or \
-          (prediction.lower() == "under 7" and total < 7) or \
-          (prediction.lower() == "exactly 7" and total == 7)
-    payout = amount * 5 if prediction.lower() == "exactly 7" and win else amount if win else -amount
-    streaks = json.loads(user_data['streaks'])
-    streaks['dice_wins'] = streaks.get('dice_wins', 0) + 1 if win else 0
-    update_user_data(user_id, {
-        'balance': user_data['balance'] + payout,
-        'dice_wins': user_data['dice_wins'] + 1 if win else user_data['dice_wins'],
-        'streaks': json.dumps(streaks)
-    })
-    embed = discord.Embed(
-        title="🎲 Dice Roll",
-        description=f"Rolled {dice1} + {dice2} = {total}. {'Won' if win else 'Lost'} ${abs(payout)}!",
-        color=0x2ecc71 if win else 0xe74c3c
-    )
-    embed.add_field(name="Balance", value=f"${user_data['balance'] + payout}", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def roulette(ctx, bet_type: str, bet_value: str, amount: int):
-    """Play Roulette."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    bet_type = bet_type.lower()
-    if not validate_roulette_bet(bet_type, bet_value):
-        await ctx.send("❌ Invalid bet! Use: number (0-36), color (red/black), etc.")
-        return
-    if amount < MIN_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}+, funds: ${user_data['balance']}")
-        return
-    update_user_data(user_id, {'balance': user_data['balance'] - amount})
-    spun_number = random.randint(0, 36)
-    payout_multiplier = calculate_roulette_payout(bet_type, bet_value, spun_number)
-    payout = amount * payout_multiplier
-    new_balance = user_data['balance'] - amount + payout
-    embed = discord.Embed(
-        title="🎡 Roulette",
-        description=f"Landed on {spun_number} ({get_roulette_color(spun_number)})",
-        color=0x2ecc71 if payout > 0 else 0xe74c3c
-    )
-    embed.add_field(name="Bet", value=f"{bet_type.capitalize()} {bet_value}: ${amount}", inline=False)
-    embed.add_field(name="Result", value=f"{'Win' if payout > 0 else 'Lose'}! ${payout}", inline=False)
-    embed.add_field(name="Balance", value=f"${new_balance}", inline=True)
-    await ctx.send(embed=embed)
-    update_user_data(user_id, {'balance': new_balance})
-    if payout > 0:
-        check_achievements(user_id, amount, payout, False, new_balance, user_data['streaks'], "roulette")
-
-@bot.command()
-async def poker(ctx, amount: int):
-    """Play Poker."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    if amount < MIN_BET or amount > MAX_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}-${MAX_BET}, funds: ${user_data['balance']}")
-        return
-    update_user_data(user_id, {'balance': user_data['balance'] - amount})
-    player_hand = deal_poker_hand()
-    bot_hand = deal_poker_hand()
-    player_rank, player_multiplier = evaluate_poker_hand(player_hand)
-    bot_rank, bot_multiplier = evaluate_poker_hand(bot_hand)
-    win = list(POKER_HANDS.keys()).index(player_rank) < list(POKER_HANDS.keys()).index(bot_rank)
-    payout = amount * player_multiplier if win else 0
-    new_balance = user_data['balance'] - amount + payout
-    embed = discord.Embed(
-        title="🃏 Poker",
-        description=f"Your Hand: {' '.join(player_hand)} ({player_rank})\nBot: {' '.join(bot_hand)} ({bot_rank})",
-        color=0x2ecc71 if win else 0xe74c3c
-    )
-    embed.add_field(name="Result", value=f"{'Win' if win else 'Lose'}! ${payout}", inline=False)
-    embed.add_field(name="Balance", value=f"${new_balance}", inline=True)
-    await ctx.send(embed=embed)  # This replaces the stray "embed" line
-    update_user_data(user_id, {'balance': new_balance})
-    if win:
-        check_achievements(user_id, amount, payout, False, new_balance, user_data['streaks'], "poker")
-
-
-@bot.command()
-async def craps(ctx, bet_type: str, amount: int):
-    """Play Craps."""
-    user_id = ctx.author.id
-    bet_type = bet_type.lower()
-    if bet_type not in ["pass", "dont_pass"]:
-        await ctx.send("❌ Use 'pass' or 'dont_pass'!")
-        return
-    result, payout, new_balance = play_craps(bet_type, amount, user_id)
-    await ctx.send(embed=discord.Embed(
-        title="🎲 Craps",
-        description=result,
-        color=0x2ecc71 if payout > 0 else 0xe74c3c
-    ).add_field(name="Balance", value=f"${new_balance}", inline=True))
-    if payout > 0:
-        check_achievements(user_id, amount, payout, False, new_balance, get_user_data(user_id)['streaks'], "craps")
-
-@bot.command()
-async def baccarat(ctx, bet_type: str, amount: int):
-    """Play Baccarat."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    bet_type = bet_type.lower()
-    if bet_type not in BACCARAT_BETS:
-        await ctx.send("❌ Use 'player', 'banker', or 'tie'!")
-        return
-    if amount < MIN_BET or amount > user_data['balance']:
-        await ctx.send(f"❌ Bet ${MIN_BET}+, funds: ${user_data['balance']}")
-        return
-    update_user_data(user_id, {'balance': user_data['balance'] - amount})
-    player_hand, banker_hand = deal_baccarat_hands()
-    player_score = calculate_baccarat_score(player_hand)
-    banker_score = calculate_baccarat_score(banker_hand)
-    result = determine_baccarat_winner(player_score, banker_score)
-    payout = int(amount * BACCARAT_BETS[bet_type]) if result == bet_type else 0
-    new_balance = user_data['balance'] - amount + payout
-    embed = discord.Embed(
-        title="🎴 Baccarat",
-        description=f"Player: {' '.join(player_hand)} ({player_score})\nBanker: {' '.join(banker_hand)} ({banker_score})",
-        color=0x2ecc71 if payout > 0 else 0xe74c3c
-    )
-    embed.add_field(name="Bet", value=f"{bet_type.capitalize()}: ${amount}", inline=False)
-    embed.add_field(name="Result", value=f"{'Win' if payout > 0 else 'Lose'}! ${payout}", inline=False)
-    embed.add_field(name="Balance", value=f"${new_balance}", inline=True)
-    await ctx.send(embed=embed)
-    update_user_data(user_id, {'balance': new_balance})
-    if payout > 0:
-        check_achievements(user_id, amount, payout, False, new_balance, user_data['streaks'], "baccarat")
-
-# --- Economy Commands ---
-@bot.command()
-async def shop(ctx):
-    """Display shop."""
-    embed = discord.Embed(title="🛒 Shop", description="Use `!buy [item_id]`", color=0x3498db)
-    for item_id, item in SHOP_ITEMS.items():
-        embed.add_field(name=f"{item['name']} - ${item['price']} ({item_id})", value=item['description'], inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def buy(ctx, item_id: str):
-    """Buy from shop."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    item = SHOP_ITEMS.get(item_id)
-    if not item:
-        await ctx.send("❌ Item not found!")
-        return
-    if user_data['balance'] < item['price']:
-        await ctx.send(f"❌ Need ${item['price']}, have ${user_data['balance']}")
-        return
-    inventory = json.loads(user_data['inventory'])
-    if item_id.startswith("profile_bg") and item_id not in inventory.get("owned_bgs", []):
-        inventory["owned_bgs"] = inventory.get("owned_bgs", []) + [item_id]
-    elif item_id.startswith("title") and item_id not in inventory.get("owned_titles", []):
-        inventory["owned_titles"] = inventory.get("owned_titles", []) + [item_id]
-    elif item_id in ["daily_boost", "xp_boost"]:
-        inventory["boosts"] = inventory.get("boosts", {})
-        inventory["boosts"][item_id] = (datetime.utcnow() + timedelta(days=1)).isoformat()
-    elif item_id == "loan_pass":
-        inventory["loan_pass"] = True
-    elif item_id == "tournament_ticket":
-        inventory["tournament_tickets"] = inventory.get("tournament_tickets", 0) + 1
-    elif item_id == "crafting_kit":
-        inventory["crafting_kit"] = True
-    update_user_data(user_id, {
-        'balance': user_data['balance'] - item['price'],
-        'inventory': json.dumps(inventory)
-    })
-    await ctx.send(f"🛍️ Bought {item['name']} for ${item['price']}!")
-
-@bot.command()
-async def lottery(ctx, tickets: int = 1):
-    """Buy lottery tickets."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    cost = tickets * LOTTERY_TICKET_PRICE
-    if tickets < 1 or cost > user_data['balance']:
-        await ctx.send(f"❌ ${LOTTERY_TICKET_PRICE}/ticket, can afford {user_data['balance'] // LOTTERY_TICKET_PRICE}")
-        return
-    update_user_data(user_id, {
-        'balance': user_data['balance'] - cost,
-        'lottery_tickets': user_data['lottery_tickets'] + tickets
-    })
-    update_lottery_jackpot(cost // 2)
-    await ctx.send(f"🎟️ Bought {tickets} tickets for ${cost}! Jackpot: ${get_lottery_jackpot()}")
-
-@bot.command()
-async def craft(ctx, recipe_id: str):
-    """Craft an item."""
-    if recipe_id not in CRAFTING_RECIPES:
-        await ctx.send("❌ Invalid recipe! Options: " + ", ".join(CRAFTING_RECIPES.keys()))
-        return
-    result = craft_item(ctx.author.id, recipe_id)
-    await ctx.send(result)
-
-# --- Tournament Commands ---
-@bot.command()
-async def tournament(ctx, game: str):
-    """Start a tournament."""
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    game = game.lower()
-    if game not in ["coinflip", "dice", "slots"]:
-        await ctx.send("❌ Use 'coinflip', 'dice', or 'slots'!")
-        return
-    channel_id = ctx.channel.id
-    if get_tournament_data(channel_id) and get_tournament_data(channel_id)['active']:
-        await ctx.send("❌ Tournament already active!")
-        return
-    update_tournament_data(channel_id, {
-        'game_type': game,
-        'players': json.dumps({user_id: 0}),
-        'scores': json.dumps({user_id: 0}),
-        'rounds': 3,
-        'current_round': 0,
-        'active': 1,
-        'prize_pool': TOURNAMENT_ENTRY_FEE
-    })
-    update_user_data(user_id, {'balance': user_data['balance'] - TOURNAMENT_ENTRY_FEE})
-    await ctx.send(f"🏆 {game.capitalize()} Tournament started! Join with `!join`. Starts in 60s.")
-    await asyncio.sleep(60)
-    await run_tournament(channel_id)
-
-@bot.command()
-async def join(ctx):
-    """Join a tournament."""
-    channel_id = ctx.channel.id
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    tournament = get_tournament_data(channel_id)
-    if not tournament or not tournament['active']:
-        await ctx.send("❌ No active tournament!")
-        return
-    if user_data['balance'] < TOURNAMENT_ENTRY_FEE:
-        await ctx.send(f"❌ Need ${TOURNAMENT_ENTRY_FEE}, have ${user_data['balance']}")
-        return
-    players = json.loads(tournament['players'])
-    scores = json.loads(tournament['scores'])
-    if user_id not in players:
-        players[user_id] = 0
-        scores[user_id] = 0
-        update_user_data(user_id, {'balance': user_data['balance'] - TOURNAMENT_ENTRY_FEE})
-        update_tournament_data(channel_id, {
-            'players': json.dumps(players),
-            'scores': json.dumps(scores),
-            'prize_pool': tournament['prize_pool'] + TOURNAMENT_ENTRY_FEE
-        })
-        await ctx.send(f"{ctx.author.mention} joined {tournament['game_type']} tournament! Prize: ${tournament['prize_pool']}")
-
-async def run_tournament(channel_id):
-    """Run tournament rounds."""
-    tournament = get_tournament_data(channel_id)
-    channel = bot.get_channel(channel_id)
-    players = json.loads(tournament['players'])
-    scores = json.loads(tournament['scores'])
-    if len(players) < 2:
-        await channel.send("❌ Not enough players!")
-        update_tournament_data(channel_id, {'active': 0})
-        return
-    for round_num in range(1, tournament['rounds'] + 1):
-        await channel.send(f"Round {round_num} begins!")
-        for player_id in players:
-            if tournament['game_type'] == "coinflip":
-                win = random.choice([True, False])
-                scores[player_id] += 100 if win else -100
-            elif tournament['game_type'] == "dice":
-                total = sum(random.randint(1, 6) for _ in range(2))
-                scores[player_id] += 100 if total > 7 else -100
-            else:  # slots
-                slots = spin_slots(1)
-                winnings, _, _ = check_win(slots)
-                scores[player_id] += winnings
-        update_tournament_data(channel_id, {'scores': json.dumps(scores), 'current_round': round_num})
-        await asyncio.sleep(5)
-    winner_id = max(scores, key=scores.get)
-    update_user_data(winner_id, {
-        'balance': get_user_data(winner_id)['balance'] + tournament['prize_pool'],
-        'achievements': json.dumps(json.loads(get_user_data(winner_id)['achievements']) + ["tournament_champ"])
-    })
-    await channel.send(f"🏆 <@{winner_id}> wins ${tournament['prize_pool']} with {scores[winner_id]} points!")
-    update_tournament_data(channel_id, {'active': 0})
-
-
-# --- Help Command ---
-@bot.command(name="paradox")
-async def paradox_help(ctx):
-    """Display help menu."""
-    embed = discord.Embed(title="🎰 Paradox Casino Help", description="All commands:", color=0x3498db)
-    embed.add_field(name="Core", value="`!bet [amt] [lines]`, `!daily`, `!profile [user]`, `!jackpot`", inline=False)
-    embed.add_field(name="Games", value="`!tictactoe [@user]`, `!move [row] [col]`, `!hangman`, `!guess [letter]`, `!guessnumber`, `!number [guess]`, `!trivia`, `!rps [amt]`, `!blackjack [amt]`, `!wheel [amt]`, `!coinflip [amt] [choice]`, `!dice [amt] [pred]`, `!roulette [type] [val] [amt]`, `!poker [amt]`, `!craps [type] [amt]`, `!baccarat [type] [amt]`", inline=False)
-    embed.add_field(name="Economy", value="`!shop`, `!buy [item]`, `!lottery [tickets]`, `!craft [recipe]`", inline=False)
-    embed.add_field(name="Multiplayer", value="`!tournament [game]`, `!join`", inline=False)
-    embed.add_field(name="Admin", value="`!setdailyannouncement [channel] [msg]`, `!unsetdailyannouncement`", inline=False)
-    embed.set_footer(text="Prefix: !")
-    await ctx.send(embed=embed)
-
-# --- Error Handling ---
-@bot.event
-async def on_command_error(ctx, error):
-    """Handle command errors."""
-    if isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏳ Wait {error.retry_after:.1f}s")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Missing argument! See `!paradox`")
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ No permission!")
-    else:
-        logger.error(f"Error in {ctx.command}: {error}")
-        await ctx.send("❌ Error occurred!")
-
-# --- Startup Logic ---
 if __name__ == "__main__":
-    token = os.getenv("DISCORD_BOT_TOKEN")
-    if not token:
-        logger.error("No DISCORD_BOT_TOKEN!")
-        exit(1)
-    bot.run(token)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    bot.loop.create_task(casino_announcements())
+    bot.loop.create_task(daily_shop_reset())
+    bot.loop.create_task(lottery_draw_task())
+    bot.loop.create_task(bank_interest_task())
+    bot.loop.create_task(mission_reset_task())
+    bot.run(os.getenv("DISCORD_BOT_TOKEN"))
