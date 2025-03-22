@@ -1,5 +1,5 @@
 # Segment 1: Lines 1-100
-# --- Imports and Global Setup ---
+# --- Imports ---
 import discord
 from discord.ext import commands
 import random
@@ -14,13 +14,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import math
-import requests
-import html
-import aiohttp
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# Define bot_start_time at startup (Fix for Code #2)
-bot_start_time = datetime.utcnow()
 
 # --- Constants ---
 MAX_LINES = 3
@@ -33,7 +26,11 @@ STARTING_BALANCE = 7000
 LOTTERY_TICKET_PRICE = 50
 TOURNAMENT_ENTRY_FEE = 500
 BANK_INTEREST_RATE = 0.02
+LOAN_INTEREST_RATE = 0.05
+LOAN_TERM_DAYS = 7
+XP_PER_LEVEL = 100
 
+# --- Game Constants ---
 SLOTS = ['🍒', '🍋', '🍇', '🔔', '💎', '7️⃣']
 WIN_MESSAGES = [
     "You're on a hot streak! 🔥", "Luck is on your side! 🍀", "Money in the bank! 💰",
@@ -51,28 +48,29 @@ GREEN_NUMBERS = [0]
 ROULETTE_BETS = {
     "number": {"payout": 35, "validator": lambda x: x.isdigit() and 0 <= int(x) <= 36},
     "color": {"payout": 1, "validator": lambda x: x.lower() in ["red", "black"]},
-    "parity": {"payout": 1, "validator": lambda x: x.lower() in ["even", "odd"]},
-    "range": {"payout": 1, "validator": lambda x: x.lower() in ["high", "low"]},
-    "dozen": {"payout": 2, "validator": lambda x: x.lower() in ["first", "second", "third"]},
-    "column": {"payout": 2, "validator": lambda x: x.isdigit() and 1 <= int(x) <= 3}
+    "parity": {"payout": 1, "validator": lambda x: x.lower() in ["even", "odd"]}
 }
 
 CARD_SUITS = ['♠', '♣', '♥', '♦']
 CARD_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 POKER_PAYOUTS = {
-    "royal_flush": 250,
-    "straight_flush": 50,
-    "four_of_a_kind": 25,
-    "full_house": 9,
-    "flush": 6,
-    "straight": 4,
-    "three_of_a_kind": 3,
-    "two_pair": 2,
-    "pair": 1,
-    "high_card": 0
+    "royal_flush": 250, "straight_flush": 50, "four_of_a_kind": 25, "full_house": 9,
+    "flush": 6, "straight": 4, "three_of_a_kind": 3, "two_pair": 2, "pair": 1, "high_card": 0
 }
 
+# --- Logging Setup ---
+logger = logging.getLogger('ParadoxCasinoBot')
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+file_handler = RotatingFileHandler('casino_bot.log', maxBytes=5*1024*1024, backupCount=5)
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
 # Segment 2: Lines 101-200
+# --- Additional Constants ---
 BLACKJACK_PAYOUT = 1.5
 DECK = [f"{rank}{suit}" for suit in CARD_SUITS for rank in CARD_RANKS] * 4
 WHEEL_PRIZES = [0, 50, 100, 200, 500, 1000, "Jackpot"]
@@ -82,56 +80,55 @@ BINGO_NUMBERS = list(range(1, 76))
 BINGO_CARD_SIZE = 5
 
 SHOP_ITEMS = {
-    "profile_bg1": {"name": "Cosmic Background", "description": "A starry night sky", "price": 1000},
-    "profile_bg2": {"name": "Golden Vault", "description": "Shimmering gold backdrop", "price": 1000},
-    "title_gambler": {"name": "Gambler", "description": "For risk-takers", "price": 500},
-    "title_highroller": {"name": "High Roller", "description": "For big spenders", "price": 750},
-    "daily_boost": {"name": "Daily Boost", "description": "Doubles daily reward for 24h", "price": 200},
-    "xp_boost": {"name": "XP Boost", "description": "Doubles XP gain for 24h", "price": 300},
-    "loan_pass": {"name": "Loan Pass", "description": "Allows taking a loan", "price": 100},
-    "tournament_ticket": {"name": "Tournament Ticket", "description": "Entry to a tournament", "price": 500},
-    "crafting_kit": {"name": "Crafting Kit", "description": "Unlocks crafting recipes", "price": 800}
+    "coin": {"name": "Coin", "description": "Crafting material", "price": 10},
+    "lucky_charm": {"name": "Lucky Charm", "description": "Boosts luck", "price": 50},
+    "xp_boost": {"name": "XP Boost", "description": "Doubles XP for 24h", "price": 300},
+    "tournament_ticket": {"name": "Tournament Ticket", "description": "Enter a tournament", "price": 500}
 }
 
 CRAFTING_RECIPES = {
     "lucky_charm": {
-        "ingredients": {"gold_coin": 5, "four_leaf_clover": 1},
+        "ingredients": {"coin": 5},
         "description": "Increases win chance by 5% for 1 hour",
         "duration": "1h"
     },
     "mega_jackpot": {
-        "ingredients": {"gold_bar": 3, "diamond": 2},
+        "ingredients": {"coin": 10},
         "description": "Triples jackpot winnings once",
         "uses": 1
     }
 }
 
 ITEM_DROP_TABLE = {
-    "gold_coin": {"chance": 0.5, "source": "slots"},
-    "four_leaf_clover": {"chance": 0.1, "source": "roulette"},
-    "gold_bar": {"chance": 0.05, "source": "poker"},
-    "diamond": {"chance": 0.02, "source": "blackjack"}
+    "coin": {"chance": 0.5, "source": "slots"},
+    "four_leaf_clover": {"chance": 0.1, "source": "roulette"}
 }
 
-ACHIEVEMENTS = {
-    "first_win": {"name": "Paradox Novice", "description": "Win your first slot game", "emoji": "🏆"},
-    "big_winner": {"name": "Paradox Master", "description": "Win over 1000 coins", "emoji": "💎"},
-    "daily_streak": {"name": "Consistent Player", "description": "Claim daily reward 7 days in a row", "emoji": "📅"},
-    "tournament_champ": {"name": "Tournament King", "description": "Win a tournament", "emoji": "👑"}
-}
+# --- Bot Setup ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-MISSIONS = {
-    "daily": [
-        {"id": "play_slots", "name": "Slot Enthusiast", "description": "Play 5 slot games", "requirements": {"slot_plays": 5}, "rewards": {"coins": 100, "xp": 50}},
-        {"id": "win_roulette", "name": "Roulette Pro", "description": "Win a roulette bet", "requirements": {"roulette_wins": 1}, "rewards": {"coins": 150, "xp": 75}}
-    ],
-    "weekly": [
-        {"id": "big_spender", "name": "Big Spender", "description": "Spend 5000 coins", "requirements": {"spent": 5000}, "rewards": {"coins": 1000, "xp": 500}}
-    ],
-    "one-time": [
-        {"id": "first_level", "name": "Level Up", "description": "Reach level 2", "requirements": {"level": 2}, "rewards": {"coins": 200, "xp": 100}}
-    ]
-}
+# --- Flask Setup ---
+app = Flask(__name__)
+start_time = time.time()
+
+@app.route('/')
+def home():
+    return "Paradox Casino Bot is operational!"
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "uptime": time.time() - start_time}), 200
+
+def run_flask():
+    port = int(os.environ.get('FLASK_PORT', 10000))  # Matches Render logs
+    logger.info(f"Starting Flask server on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# --- Start Flask in a separate thread ---
+threading.Thread(target=run_flask, daemon=True).start()
 
 # Segment 3: Lines 201-300
 # --- Logging Setup (Fix for Code #8) ---
@@ -351,6 +348,7 @@ def update_tournament_data(channel_id, updates):
     except sqlite3.Error as e:
         logger.error(f"Database error in update_tournament_data: {e}")
 
+# Segment 4: Lines 301-400
 def set_announcement_settings(guild_id, channel_id, message=None):
     """Set the announcement channel and optional message for a guild."""
     try:
@@ -371,6 +369,120 @@ def get_announcement_settings(guild_id):
     except sqlite3.Error as e:
         logger.error(f"Database error in get_announcement_settings: {e}")
         return None
+
+def get_lottery_tickets(user_id):
+    """Get the number of lottery tickets for a user."""
+    try:
+        c = db_conn.cursor()
+        c.execute('SELECT ticket_count FROM lottery WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result['ticket_count'] if result else 0
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_lottery_tickets: {e}")
+        return 0
+
+def update_lottery_tickets(user_id, count):
+    """Update the number of lottery tickets for a user."""
+    try:
+        c = db_conn.cursor()
+        c.execute('INSERT OR REPLACE INTO lottery (user_id, ticket_count) VALUES (?, ?)', (user_id, count))
+        db_conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in update_lottery_tickets: {e}")
+
+def get_tournament_data(channel_id):
+    """Retrieve tournament data for a channel."""
+    try:
+        c = db_conn.cursor()
+        c.execute('SELECT * FROM tournaments WHERE channel_id = ?', (channel_id,))
+        data = c.fetchone()
+        if data:
+            keys = ['channel_id', 'game_type', 'players', 'scores', 'prize_pool']
+            return dict(zip(keys, data))
+        return None
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_tournament_data: {e}")
+        return None
+
+def update_tournament_data(channel_id, updates):
+    """Update or insert tournament data."""
+    try:
+        c = db_conn.cursor()
+        c.execute('INSERT OR IGNORE INTO tournaments (channel_id) VALUES (?)', (channel_id,))
+        query = 'UPDATE tournaments SET ' + ', '.join(f'{k} = ?' for k in updates) + ' WHERE channel_id = ?'
+        values = list(updates.values()) + [channel_id]
+        c.execute(query, values)
+        db_conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error in update_tournament_data: {e}")
+
+def get_user_inventory(user_id):
+    """Get a user's inventory."""
+    user_data = get_user_data(user_id)
+    return json.loads(user_data['inventory'] if user_data else '{}')
+
+# Segment 5: Lines 401-500
+# --- Helper Function for Role Check ---
+def has_admin_role(ctx):
+    """Check if the user has a role named 'admin', 'owner', or 'moderator' (case-insensitive)."""
+    return any(role.name.lower() in ['admin', 'owner', 'moderator'] for role in ctx.author.roles)
+
+# --- !setannouncechannel Command ---
+@bot.command()
+@commands.cooldown(1, 60, commands.BucketType.guild)
+async def setannouncechannel(ctx, channel: discord.TextChannel):
+    """Set a specific channel for bot announcements. Usage: !setannouncechannel #channel"""
+    if not has_admin_role(ctx):
+        await ctx.send("❌ You must have an admin, owner, or moderator role to use this command!")
+        return
+
+    current_channel_perms = ctx.channel.permissions_for(ctx.guild.me)
+    if not current_channel_perms.send_messages:
+        try:
+            await ctx.author.send("❌ I don't have permission to send messages in that channel!")
+        except discord.Forbidden:
+            pass
+        return
+    if not current_channel_perms.embed_links:
+        try:
+            await ctx.author.send("❌ I don't have permission to send embeds in that channel!")
+        except discord.Forbidden:
+            pass
+        return
+
+    bot_permissions = channel.permissions_for(ctx.guild.me)
+    if not bot_permissions.send_messages:
+        await ctx.send(f"❌ I don't have permission to send messages in {channel.mention}!")
+        return
+    if not bot_permissions.embed_links:
+        await ctx.send(f"❌ I don't have permission to send embeds in {channel.mention}!")
+        return
+
+    set_announcement_settings(ctx.guild.id, channel.id)
+    embed = discord.Embed(
+        title="📢 Announcement Channel Set",
+        description=f"Announcements will now be sent to {channel.mention}.",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
+
+# --- Error Handling ---
+@bot.event
+async def on_command_error(ctx, error):
+    """Handle command errors with improved permission error handling."""
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Command on cooldown. Retry in {error.retry_after:.1f}s.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Missing argument! Use `!help` for details.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Invalid argument! Use `!help` for details.")
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ I lack the necessary permissions to perform this action!")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ I don't have the required permissions (e.g., Send Messages, Embed Links).")
+    else:
+        await ctx.send(f"❌ Error: {str(error)}")
+        logger.error(f"Command error: {error}")
 
 # Segment 6: Lines 501-600
 # --- Game Functions ---
